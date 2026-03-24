@@ -4,15 +4,25 @@ version: '3.9'
 # EnterpriseLink Recon — Local Development Stack
 # ─────────────────────────────────────────────────────────────────────────────
 # Usage:
-#   docker compose up -d              Start all services
-#   docker compose up -d sqlserver    Start only SQL Server
-#   docker compose logs -f worker     Tail worker logs
-#   docker compose down -v            Stop and remove volumes
+#   docker compose up --build -d          Build and start all services
+#   docker compose up -d sqlserver        Start only SQL Server
+#   docker compose logs -f worker-service  Tail worker logs
+#   docker compose down -v                Stop and remove volumes
+#
+# Service ports (host → container):
+#   Gateway       → http://localhost:5000   (routes all /api/* traffic)
+#   Auth          → http://localhost:5001   (direct dev access)
+#   Tenant        → http://localhost:5002
+#   Ingestion     → http://localhost:5003
+#   Worker        → http://localhost:5004   (/health only)
+#   Dashboard     → http://localhost:5005
+#   RabbitMQ UI   → http://localhost:15672  (user: eluser / elpassword)
+#   SQL Server    → localhost:1433
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
 
-  # ── Infrastructure ──────────────────────────────────────────────────────────
+  # ── Infrastructure ───────────────────────────────────────────────────────────
 
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest
@@ -26,10 +36,10 @@ services:
     volumes:
       - sqlserver-data:/var/opt/mssql
     healthcheck:
-      test: /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "${SQL_SA_PASSWORD:-Dev@Password123!}" -Q "SELECT 1" -b
+      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "${SQL_SA_PASSWORD:-Dev@Password123!}" -Q "SELECT 1" -b -C
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 15
       start_period: 30s
     networks:
       - el-network
@@ -43,7 +53,7 @@ services:
       RABBITMQ_DEFAULT_VHOST: "enterpriselink"
     ports:
       - "5672:5672"    # AMQP
-      - "15672:15672"  # Management UI
+      - "15672:15672"  # Management UI  →  http://localhost:15672
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
@@ -67,13 +77,21 @@ services:
       ASPNETCORE_URLS: http://+:8080
     ports:
       - "5000:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     depends_on:
       auth-service:
-        condition: service_started
+        condition: service_healthy
+      tenant-service:
+        condition: service_healthy
       ingestion-service:
-        condition: service_started
+        condition: service_healthy
       dashboard-service:
-        condition: service_started
+        condition: service_healthy
     networks:
       - el-network
     restart: unless-stopped
@@ -89,6 +107,36 @@ services:
       ConnectionStrings__DefaultConnection: "Server=sqlserver;Database=EnterpriseLink_Auth;User Id=sa;Password=${SQL_SA_PASSWORD:-Dev@Password123!};TrustServerCertificate=True"
     ports:
       - "5001:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    networks:
+      - el-network
+    restart: unless-stopped
+
+  tenant-service:
+    build:
+      context: .
+      dockerfile: src/Services/EnterpriseLink.Tenant/Dockerfile
+    container_name: el-tenant
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: "Server=sqlserver;Database=EnterpriseLink_Core;User Id=sa;Password=${SQL_SA_PASSWORD:-Dev@Password123!};TrustServerCertificate=True"
+    ports:
+      - "5002:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     depends_on:
       sqlserver:
         condition: service_healthy
@@ -110,7 +158,13 @@ services:
       RabbitMQ__Username: "${RABBITMQ_USER:-eluser}"
       RabbitMQ__Password: "${RABBITMQ_PASS:-elpassword}"
     ports:
-      - "5002:8080"
+      - "5003:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     depends_on:
       sqlserver:
         condition: service_healthy
@@ -126,12 +180,21 @@ services:
       dockerfile: src/Services/EnterpriseLink.Worker/Dockerfile
     container_name: el-worker
     environment:
-      DOTNET_ENVIRONMENT: Development
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__DefaultConnection: "Server=sqlserver;Database=EnterpriseLink_Core;User Id=sa;Password=${SQL_SA_PASSWORD:-Dev@Password123!};TrustServerCertificate=True"
       RabbitMQ__Host: "rabbitmq"
       RabbitMQ__VirtualHost: "enterpriselink"
       RabbitMQ__Username: "${RABBITMQ_USER:-eluser}"
       RabbitMQ__Password: "${RABBITMQ_PASS:-elpassword}"
+    ports:
+      - "5004:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     depends_on:
       sqlserver:
         condition: service_healthy
@@ -151,7 +214,13 @@ services:
       ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__DefaultConnection: "Server=sqlserver;Database=EnterpriseLink_Core;User Id=sa;Password=${SQL_SA_PASSWORD:-Dev@Password123!};TrustServerCertificate=True"
     ports:
-      - "5003:8080"
+      - "5005:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     depends_on:
       sqlserver:
         condition: service_healthy
@@ -159,7 +228,7 @@ services:
       - el-network
     restart: unless-stopped
 
-# ── Volumes & Networks ─────────────────────────────────────────────────────────
+# ── Volumes & Networks ──────────────────────────────────────────────────────────
 
 volumes:
   sqlserver-data:

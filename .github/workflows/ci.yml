@@ -160,6 +160,16 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build Tenant image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/Services/EnterpriseLink.Tenant/Dockerfile
+          push: false
+          tags: enterpriselink/tenant:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       - name: Build Dashboard image
         uses: docker/build-push-action@v6
         with:
