@@ -41,7 +41,6 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
             .IsRequired()
             .HasConversion<string>()
             .HasMaxLength(50);
-            // Default is set at the entity level, not the DB level, to avoid EF sentinel ambiguity
 
         builder.Property(u => u.IsActive)
             .IsRequired()

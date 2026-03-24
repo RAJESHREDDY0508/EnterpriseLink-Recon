@@ -33,7 +33,6 @@ public sealed class TenantConfiguration : IEntityTypeConfiguration<Tenant>
             .IsRequired()
             .HasConversion<string>()      // Store as "Financial", "Healthcare" — human-readable
             .HasMaxLength(50);
-            // Default is set at the entity level, not the DB level, to avoid EF sentinel ambiguity
 
         builder.Property(t => t.IsActive)
             .IsRequired()

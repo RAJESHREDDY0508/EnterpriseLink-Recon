@@ -41,7 +41,6 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
             .IsRequired()
             .HasConversion<string>()
             .HasMaxLength(50);
-            // Default (Pending) is set at the entity level to avoid EF sentinel ambiguity
 
         builder.Property(t => t.ExternalReferenceId)
             .IsRequired(false)
