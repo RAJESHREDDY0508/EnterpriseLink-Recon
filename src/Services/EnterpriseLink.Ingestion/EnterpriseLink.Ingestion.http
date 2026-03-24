@@ -1,0 +1,6 @@
+@EnterpriseLink.Ingestion_HostAddress = http://localhost:5240
+
+GET {{EnterpriseLink.Ingestion_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

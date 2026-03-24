@@ -1,0 +1,6 @@
+@EnterpriseLink.Auth_HostAddress = http://localhost:5102
+
+GET {{EnterpriseLink.Auth_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
