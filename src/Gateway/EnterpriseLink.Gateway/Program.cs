@@ -19,9 +19,9 @@ builder.Services.AddRateLimiter(options =>
 {
     options.AddFixedWindowLimiter("gateway-global", opt =>
     {
-        opt.Window            = TimeSpan.FromSeconds(rateLimitCfg.GetValue("GlobalWindowSeconds", 60));
-        opt.PermitLimit       = rateLimitCfg.GetValue("GlobalPermitLimit", 1000);
-        opt.QueueLimit        = 0;
+        opt.Window = TimeSpan.FromSeconds(rateLimitCfg.GetValue("GlobalWindowSeconds", 60));
+        opt.PermitLimit = rateLimitCfg.GetValue("GlobalPermitLimit", 1000);
+        opt.QueueLimit = 0;
         opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
     });
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -42,9 +42,9 @@ var app = builder.Build();
 app.Use(async (ctx, next) =>
 {
     ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
-    ctx.Response.Headers["X-Frame-Options"]        = "DENY";
-    ctx.Response.Headers["X-XSS-Protection"]       = "1; mode=block";
-    ctx.Response.Headers["Referrer-Policy"]         = "no-referrer";
+    ctx.Response.Headers["X-Frame-Options"] = "DENY";
+    ctx.Response.Headers["X-XSS-Protection"] = "1; mode=block";
+    ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
     await next();
 });
 
