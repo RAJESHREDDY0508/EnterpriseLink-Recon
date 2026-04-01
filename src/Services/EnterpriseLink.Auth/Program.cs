@@ -1,5 +1,7 @@
+using EnterpriseLink.Auth.Claims;
 using EnterpriseLink.Auth.Configuration;
 using EnterpriseLink.Auth.Services;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Identity.Web;
@@ -50,6 +52,13 @@ try
     // Singleton: maps Entra tid → internal TenantId. Immutable after startup.
     builder.Services
         .AddSingleton<ITenantMappingService, ConfigurationTenantMappingService>();
+
+    // ── JWT Claims Transformation ─────────────────────────────────────────────
+    // Runs immediately after Entra ID token validation (inside UseAuthentication).
+    // Adds: "tenant_id" claim (internal GUID) and ClaimTypes.Role from Entra "roles".
+    // Scoped lifetime matches the per-request authentication pipeline.
+    builder.Services
+        .AddScoped<IClaimsTransformation, EnterpriseLinkClaimsTransformation>();
 
     // ── API Surface ───────────────────────────────────────────────────────────
     builder.Services.AddControllers();
