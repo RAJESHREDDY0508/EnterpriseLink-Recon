@@ -16,6 +16,7 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />
     <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Moq" />
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
@@ -30,6 +31,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Shared\EnterpriseLink.Shared.Infrastructure\EnterpriseLink.Shared.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Services\EnterpriseLink.Auth\EnterpriseLink.Auth.csproj" />
   </ItemGroup>
 
   <ItemGroup>

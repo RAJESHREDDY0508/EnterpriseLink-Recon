@@ -4,10 +4,22 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!--
+      Enable XML documentation so Swagger shows full endpoint docs
+      in the developer UI and exported OpenAPI spec.
+    -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- API surface -->
     <PackageReference Include="Swashbuckle.AspNetCore" />
+
+    <!-- Microsoft Entra ID (Azure AD) token validation -->
+    <PackageReference Include="Microsoft.Identity.Web" />
+
+    <!-- Structured logging -->
     <PackageReference Include="Serilog.AspNetCore" />
     <PackageReference Include="Serilog.Sinks.Console" />
   </ItemGroup>
