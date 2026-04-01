@@ -48,6 +48,16 @@ public class AppDbContext : DbContext
     public DbSet<User> Users => Set<User>();
     public DbSet<Transaction> Transactions => Set<Transaction>();
 
+    // ── EF Core pipeline configuration ───────────────────────────────────────
+
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        // Register the RLS interceptor for this DbContext instance.
+        // It sets SESSION_CONTEXT(N'TenantId') on every new connection so that
+        // the SQL Server fn_TenantAccessPredicate can enforce the security policy.
+        optionsBuilder.AddInterceptors(new TenantSessionContextInterceptor(_tenantContext));
+    }
+
     // ── Model configuration ───────────────────────────────────────────────────
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
