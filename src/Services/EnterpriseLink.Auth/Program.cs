@@ -1,3 +1,4 @@
+using EnterpriseLink.Auth.Authorization;
 using EnterpriseLink.Auth.Claims;
 using EnterpriseLink.Auth.Configuration;
 using EnterpriseLink.Auth.Services;
@@ -59,6 +60,43 @@ try
     // Scoped lifetime matches the per-request authentication pipeline.
     builder.Services
         .AddScoped<IClaimsTransformation, EnterpriseLinkClaimsTransformation>();
+
+    // ── Role-Based Authorization Policies ─────────────────────────────────────
+    // Named policies defined here are referenced by [Authorize(Policy = "...")] on
+    // controllers. RequireRole() accepts multiple roles as OR — any one role suffices.
+    // RequireAuthenticatedUser() is included in every policy; unauthenticated callers
+    // receive 401 before role evaluation runs.
+    builder.Services.AddAuthorization(options =>
+    {
+        // ── Single-role policies ──────────────────────────────────────────────
+        options.AddPolicy(PolicyNames.RequireAdmin, policy =>
+            policy.RequireAuthenticatedUser()
+                  .RequireRole(Roles.Admin));
+
+        options.AddPolicy(PolicyNames.RequireAuditor, policy =>
+            policy.RequireAuthenticatedUser()
+                  .RequireRole(Roles.Auditor));
+
+        options.AddPolicy(PolicyNames.RequireVendor, policy =>
+            policy.RequireAuthenticatedUser()
+                  .RequireRole(Roles.Vendor));
+
+        options.AddPolicy(PolicyNames.RequireOperator, policy =>
+            policy.RequireAuthenticatedUser()
+                  .RequireRole(Roles.Operator));
+
+        // ── Composite policies ────────────────────────────────────────────────
+        // RequireAuditAccess: read-only reporting — Admin can always read everything.
+        options.AddPolicy(PolicyNames.RequireAuditAccess, policy =>
+            policy.RequireAuthenticatedUser()
+                  .RequireRole(Roles.Admin, Roles.Auditor));
+
+        // RequireOperationAccess: write operations — Admin, Operator, and Vendor
+        // can process and submit transactions.
+        options.AddPolicy(PolicyNames.RequireOperationAccess, policy =>
+            policy.RequireAuthenticatedUser()
+                  .RequireRole(Roles.Admin, Roles.Operator, Roles.Vendor));
+    });
 
     // ── API Surface ───────────────────────────────────────────────────────────
     builder.Services.AddControllers();
