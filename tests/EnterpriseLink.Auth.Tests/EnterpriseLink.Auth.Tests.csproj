@@ -23,6 +23,11 @@
     </PackageReference>
   </ItemGroup>
 
+  <!-- Gives access to DefaultHttpContext, ClaimsPrincipal, etc. for middleware tests -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\Shared\EnterpriseLink.Shared.Infrastructure\EnterpriseLink.Shared.Infrastructure.csproj" />
   </ItemGroup>
