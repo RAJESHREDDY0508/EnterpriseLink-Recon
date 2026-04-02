@@ -2,6 +2,7 @@ using EnterpriseLink.Ingestion.Configuration;
 using EnterpriseLink.Ingestion.Extensions;
 using EnterpriseLink.Ingestion.Models;
 using EnterpriseLink.Ingestion.Validation;
+using MassTransit;
 using FluentValidation;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Features;
@@ -80,6 +81,12 @@ try
     // Provider selected from FileStorage:Provider config ("local" default).
     // Swap to "azureblob" in future without touching controller code.
     builder.Services.AddFileStorage(builder.Configuration);
+
+    // ── Messaging (MassTransit + RabbitMQ) ───────────────────────────────────
+    // Registers MassTransit bus, RabbitMQ transport, exponential back-off retry,
+    // and IEventPublisher → MassTransitEventPublisher.
+    // Satisfies: "Message sent to broker" + "Retry on failure".
+    builder.Services.AddIngestionMessaging(builder.Configuration);
 
     // ── FluentValidation ──────────────────────────────────────────────────────
     // Registers all validators in this assembly. FileUploadRequestValidator

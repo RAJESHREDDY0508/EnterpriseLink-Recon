@@ -1,5 +1,7 @@
+using EnterpriseLink.Ingestion.Messaging;
 using EnterpriseLink.Ingestion.Models;
 using EnterpriseLink.Ingestion.Storage;
+using EnterpriseLink.Shared.Contracts.Events;
 using EnterpriseLink.Shared.Infrastructure.Middleware;
 using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
@@ -33,9 +35,10 @@ namespace EnterpriseLink.Ingestion.Controllers;
 ///   │  2. Resolve tenant_id from JWT claim
 ///   │  3. Stream row count (header excluded)
 ///   │  4. IFileStorageService.StoreAsync → file persisted at {tenantId}/{uploadId}/{file}
-///   │  5. Return UploadResult with UploadId, StoragePath, row count
+///   │  5. IEventPublisher.PublishAsync → FileUploadedEvent → RabbitMQ
+///   │  6. Return UploadResult with UploadId, StoragePath, row count
 ///   ▼
-/// [Story 3] Publish FileUploadedEvent → RabbitMQ → Worker
+/// Worker Service — consumes FileUploadedEvent, parses CSV, persists rows
 /// </code>
 ///
 /// <para><b>Streaming guarantee</b></para>
@@ -50,6 +53,7 @@ public sealed class IngestionController : ControllerBase
 {
     private readonly IValidator<FileUploadRequest> _validator;
     private readonly IFileStorageService _storageService;
+    private readonly IEventPublisher _eventPublisher;
     private readonly ILogger<IngestionController> _logger;
 
     /// <summary>
@@ -57,14 +61,17 @@ public sealed class IngestionController : ControllerBase
     /// </summary>
     /// <param name="validator">FluentValidation validator for file upload requests.</param>
     /// <param name="storageService">Storage backend — local or Azure Blob (swappable).</param>
+    /// <param name="eventPublisher">Message broker publisher — MassTransit/RabbitMQ.</param>
     /// <param name="logger">Structured logger.</param>
     public IngestionController(
         IValidator<FileUploadRequest> validator,
         IFileStorageService storageService,
+        IEventPublisher eventPublisher,
         ILogger<IngestionController> logger)
     {
         _validator = validator;
         _storageService = storageService;
+        _eventPublisher = eventPublisher;
         _logger = logger;
     }
 
@@ -151,6 +158,22 @@ public sealed class IngestionController : ControllerBase
         // from configuration at startup with no change to this controller.
         var storageResult = await _storageService.StoreAsync(
             tenantId, uploadId, request.File, cancellationToken);
+
+        // ── Step 5: Publish integration event to RabbitMQ ────────────────────
+        // Non-blocking from the client's perspective: the response is returned
+        // immediately after publish. Worker service processes the file asynchronously.
+        // MassTransit's exponential back-off retry handles transient broker failures.
+        await _eventPublisher.PublishAsync(new FileUploadedEvent
+        {
+            UploadId = uploadId,
+            TenantId = tenantId,
+            StoragePath = storageResult.RelativePath,
+            FileName = request.File.FileName,
+            FileSizeBytes = request.File.Length,
+            DataRowCount = dataRowCount,
+            SourceSystem = request.SourceSystem,
+            UploadedAt = DateTimeOffset.UtcNow,
+        }, cancellationToken);
 
         _logger.LogInformation(
             "Upload complete. UploadId={UploadId} TenantId={TenantId} " +

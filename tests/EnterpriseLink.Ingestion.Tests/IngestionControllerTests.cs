@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text;
 using EnterpriseLink.Ingestion.Controllers;
+using EnterpriseLink.Ingestion.Messaging;
 using EnterpriseLink.Ingestion.Models;
 using EnterpriseLink.Ingestion.Storage;
 using EnterpriseLink.Shared.Infrastructure.Middleware;
@@ -29,14 +30,24 @@ public sealed class IngestionControllerTests
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    private static IEventPublisher PassingEventPublisher()
+    {
+        var mock = new Mock<IEventPublisher>();
+        mock.Setup(p => p.PublishAsync(It.IsAny<object>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        return mock.Object;
+    }
+
     private static IngestionController BuildController(
         IValidator<FileUploadRequest>? validator = null,
         IFileStorageService? storageService = null,
+        IEventPublisher? eventPublisher = null,
         Guid? tenantId = null)
     {
         var v = validator ?? PassingValidator();
         var s = storageService ?? PassingStorageService();
-        var controller = new IngestionController(v, s, NullLogger<IngestionController>.Instance);
+        var p = eventPublisher ?? PassingEventPublisher();
+        var controller = new IngestionController(v, s, p, NullLogger<IngestionController>.Instance);
 
         controller.ControllerContext = new ControllerContext
         {
@@ -237,6 +248,51 @@ public sealed class IngestionControllerTests
         body.StoragePath.Should().Be($"{tenantId}/custom-upload/report.csv");
     }
 
+    // ── Event publisher interaction ───────────────────────────────────────────
+
+    /// <summary>On a successful upload, PublishAsync is called exactly once.</summary>
+    [Fact]
+    public async Task Valid_upload_calls_event_publisher_once()
+    {
+        var publisherMock = new Mock<IEventPublisher>();
+        publisherMock
+            .Setup(p => p.PublishAsync(It.IsAny<object>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var controller = BuildController(eventPublisher: publisherMock.Object);
+
+        await controller.UploadAsync(
+            new FileUploadRequest { File = BuildFileMock().Object, SourceSystem = "SAP" },
+            CancellationToken.None);
+
+        publisherMock.Verify(
+            p => p.PublishAsync(It.IsAny<object>(), It.IsAny<CancellationToken>()),
+            Times.Once,
+            "exactly one FileUploadedEvent must be published per successful upload");
+    }
+
+    /// <summary>
+    /// When validation fails, the event publisher must not be called —
+    /// no message should be sent to RabbitMQ for invalid requests.
+    /// </summary>
+    [Fact]
+    public async Task Validation_failure_does_not_call_event_publisher()
+    {
+        var publisherMock = new Mock<IEventPublisher>();
+        var controller = BuildController(
+            validator: FailingValidator("Only .csv files are accepted."),
+            eventPublisher: publisherMock.Object);
+
+        await controller.UploadAsync(
+            new FileUploadRequest { File = BuildFileMock(fileName: "bad.xlsx").Object, SourceSystem = "X" },
+            CancellationToken.None);
+
+        publisherMock.Verify(
+            p => p.PublishAsync(It.IsAny<object>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "no event should be published when the upload request is invalid");
+    }
+
     // ── Row counting ──────────────────────────────────────────────────────────
 
     /// <summary>Header-only CSV (no data rows) returns DataRowCount = 0.</summary>
@@ -310,6 +366,7 @@ public sealed class IngestionControllerTests
         var controller = new IngestionController(
             PassingValidator(),
             PassingStorageService(),
+            PassingEventPublisher(),
             NullLogger<IngestionController>.Instance);
 
         var identity = new ClaimsIdentity(
@@ -338,6 +395,7 @@ public sealed class IngestionControllerTests
         var controller = new IngestionController(
             PassingValidator(),
             PassingStorageService(),
+            PassingEventPublisher(),
             NullLogger<IngestionController>.Instance);
 
         var identity = new ClaimsIdentity(

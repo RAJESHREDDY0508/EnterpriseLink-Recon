@@ -10,6 +10,8 @@
 
   <ItemGroup>
     <PackageReference Include="FluentValidation.AspNetCore" />
+    <PackageReference Include="MassTransit" />
+    <PackageReference Include="MassTransit.RabbitMQ" />
     <PackageReference Include="Microsoft.Identity.Web" />
     <PackageReference Include="Swashbuckle.AspNetCore" />
     <PackageReference Include="Serilog.AspNetCore" />
@@ -17,6 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\Shared\EnterpriseLink.Shared.Contracts\EnterpriseLink.Shared.Contracts.csproj" />
     <ProjectReference Include="..\..\Shared\EnterpriseLink.Shared.Infrastructure\EnterpriseLink.Shared.Infrastructure.csproj" />
   </ItemGroup>
 
