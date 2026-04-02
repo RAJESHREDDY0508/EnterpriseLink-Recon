@@ -1,4 +1,5 @@
 using EnterpriseLink.Ingestion.Models;
+using EnterpriseLink.Ingestion.Storage;
 using EnterpriseLink.Shared.Infrastructure.Middleware;
 using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
@@ -11,9 +12,8 @@ namespace EnterpriseLink.Ingestion.Controllers;
 ///
 /// <para>
 /// The upload pipeline is designed for high-volume CSV ingestion without blocking the API.
-/// Files are accepted, validated, and streamed through a row-count pass.
-/// The actual CSV processing (parsing, validation, persistence) is dispatched
-/// asynchronously to the Worker service via RabbitMQ (Story 2).
+/// Files are accepted, validated, stored, and a row count is streamed. Actual CSV parsing
+/// and persistence are dispatched asynchronously to the Worker service via RabbitMQ (Story 3).
 /// </para>
 ///
 /// <para><b>Upload pipeline</b></para>
@@ -30,16 +30,18 @@ namespace EnterpriseLink.Ingestion.Controllers;
 ///   ▼
 /// IngestionController.UploadAsync()
 ///   │  1. FluentValidation: extension, content-type, size, metadata
-///   │  2. Stream through file line-by-line to count data rows
-///   │  3. Return UploadResult (UploadId, row count, tenant context)
+///   │  2. Resolve tenant_id from JWT claim
+///   │  3. Stream row count (header excluded)
+///   │  4. IFileStorageService.StoreAsync → file persisted at {tenantId}/{uploadId}/{file}
+///   │  5. Return UploadResult with UploadId, StoragePath, row count
 ///   ▼
-/// [Story 2] Publish FileUploadedEvent → RabbitMQ → Worker
+/// [Story 3] Publish FileUploadedEvent → RabbitMQ → Worker
 /// </code>
 ///
 /// <para><b>Streaming guarantee</b></para>
 /// ASP.NET Core spools files exceeding <c>IngestionOptions.MemoryBufferThresholdBytes</c>
-/// to disk. Row counting is performed by reading the spool stream line-by-line — the
-/// full file content is never loaded into a single in-memory string or byte array.
+/// to disk. Row counting and storage write both use <c>OpenReadStream()</c> — the full
+/// file content is never loaded into a single in-memory string or byte array.
 /// </summary>
 [ApiController]
 [Route("api/ingestion")]
@@ -47,25 +49,30 @@ namespace EnterpriseLink.Ingestion.Controllers;
 public sealed class IngestionController : ControllerBase
 {
     private readonly IValidator<FileUploadRequest> _validator;
+    private readonly IFileStorageService _storageService;
     private readonly ILogger<IngestionController> _logger;
 
     /// <summary>
     /// Initialises the controller with its required dependencies.
     /// </summary>
     /// <param name="validator">FluentValidation validator for file upload requests.</param>
+    /// <param name="storageService">Storage backend — local or Azure Blob (swappable).</param>
     /// <param name="logger">Structured logger.</param>
     public IngestionController(
         IValidator<FileUploadRequest> validator,
+        IFileStorageService storageService,
         ILogger<IngestionController> logger)
     {
         _validator = validator;
+        _storageService = storageService;
         _logger = logger;
     }
 
     // ── POST /api/ingestion/upload ────────────────────────────────────────────
 
     /// <summary>
-    /// Accepts a CSV file via multipart/form-data upload.
+    /// Accepts a CSV file via multipart/form-data upload, stores it durably,
+    /// and returns an <see cref="UploadResult"/> with the storage path and row count.
     ///
     /// <para>
     /// The request body is streamed — the server never buffers the entire file in memory.
@@ -84,12 +91,12 @@ public sealed class IngestionController : ControllerBase
     /// <returns>
     /// <c>200 OK</c> with <see cref="UploadResult"/> on success.<br/>
     /// <c>400 Bad Request</c> if metadata validation fails or file is malformed.<br/>
-    /// <c>401 Unauthorized</c> if no valid Entra ID token is provided.<br/>
+    /// <c>401 Unauthorized</c> if no valid Entra ID token is provided or tenant is unresolvable.<br/>
     /// <c>413 Payload Too Large</c> if the file exceeds <c>MaxFileSizeBytes</c> (Kestrel level).
     /// </returns>
-    /// <response code="200">File accepted; returns upload session details and row count.</response>
-    /// <response code="400">Validation failed; response body contains error messages.</response>
-    /// <response code="401">No valid Bearer token provided.</response>
+    /// <response code="200">File accepted and stored; returns session ID, storage path, and row count.</response>
+    /// <response code="400">Validation failed; response body contains field/message pairs.</response>
+    /// <response code="401">Missing or invalid Bearer token, or missing tenant_id claim.</response>
     /// <response code="413">File exceeds the configured maximum size.</response>
     [HttpPost("upload")]
     [Authorize]
@@ -134,17 +141,23 @@ public sealed class IngestionController : ControllerBase
             return Unauthorized(new { error = "Tenant identity could not be resolved from the token." });
         }
 
+        var uploadId = Guid.NewGuid();
+
         // ── Step 3: Stream row count (proves streaming, not buffering) ─────────
         var dataRowCount = await CountDataRowsAsync(request.File, cancellationToken);
 
-        var uploadId = Guid.NewGuid();
+        // ── Step 4: Persist file via storage service ──────────────────────────
+        // IFileStorageService is storage-agnostic — local or Azure Blob is resolved
+        // from configuration at startup with no change to this controller.
+        var storageResult = await _storageService.StoreAsync(
+            tenantId, uploadId, request.File, cancellationToken);
 
         _logger.LogInformation(
-            "File accepted. UploadId={UploadId} TenantId={TenantId} " +
+            "Upload complete. UploadId={UploadId} TenantId={TenantId} " +
             "FileName={FileName} FileSizeBytes={FileSizeBytes} " +
-            "DataRows={DataRows} SourceSystem={SourceSystem}",
+            "DataRows={DataRows} StoragePath={StoragePath} SourceSystem={SourceSystem}",
             uploadId, tenantId, request.File.FileName,
-            request.File.Length, dataRowCount, request.SourceSystem);
+            request.File.Length, dataRowCount, storageResult.RelativePath, request.SourceSystem);
 
         return Ok(new UploadResult(
             UploadId: uploadId,
@@ -153,6 +166,7 @@ public sealed class IngestionController : ControllerBase
             FileSizeBytes: request.File.Length,
             DataRowCount: dataRowCount,
             SourceSystem: request.SourceSystem,
+            StoragePath: storageResult.RelativePath,
             AcceptedAt: DateTimeOffset.UtcNow));
     }
 

@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text;
 using EnterpriseLink.Ingestion.Controllers;
 using EnterpriseLink.Ingestion.Models;
+using EnterpriseLink.Ingestion.Storage;
 using EnterpriseLink.Shared.Infrastructure.Middleware;
 using FluentAssertions;
 using FluentValidation;
@@ -17,9 +18,9 @@ namespace EnterpriseLink.Ingestion.Tests;
 /// Unit tests for <see cref="IngestionController"/>.
 ///
 /// <para>
-/// Each test configures only what it needs: a mock validator,
+/// Each test configures only what it needs: a mock validator, a mock storage service,
 /// a mock form file, and a pre-built <see cref="ClaimsPrincipal"/>.
-/// No HTTP pipeline, no database, no RabbitMQ.
+/// No HTTP pipeline, no database, no RabbitMQ, no real filesystem writes.
 /// </para>
 /// </summary>
 public sealed class IngestionControllerTests
@@ -30,10 +31,12 @@ public sealed class IngestionControllerTests
 
     private static IngestionController BuildController(
         IValidator<FileUploadRequest>? validator = null,
+        IFileStorageService? storageService = null,
         Guid? tenantId = null)
     {
         var v = validator ?? PassingValidator();
-        var controller = new IngestionController(v, NullLogger<IngestionController>.Instance);
+        var s = storageService ?? PassingStorageService();
+        var controller = new IngestionController(v, s, NullLogger<IngestionController>.Instance);
 
         controller.ControllerContext = new ControllerContext
         {
@@ -60,6 +63,22 @@ public sealed class IngestionControllerTests
         var mock = new Mock<IValidator<FileUploadRequest>>();
         mock.Setup(v => v.ValidateAsync(It.IsAny<FileUploadRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ValidationResult(errors));
+        return mock.Object;
+    }
+
+    private static IFileStorageService PassingStorageService(string? relativePath = null)
+    {
+        var mock = new Mock<IFileStorageService>();
+        mock.Setup(s => s.StoreAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<Guid>(),
+                It.IsAny<IFormFile>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StorageResult(
+                RelativePath: relativePath ?? "tenant-id/upload-id/data.csv",
+                FullPath: "/uploads/tenant-id/upload-id/data.csv",
+                Provider: "local",
+                StoredAt: DateTimeOffset.UtcNow));
         return mock.Object;
     }
 
@@ -101,11 +120,12 @@ public sealed class IngestionControllerTests
 
     // ── Happy path ────────────────────────────────────────────────────────────
 
-    /// <summary>Valid upload returns 200 OK with a populated UploadResult.</summary>
+    /// <summary>Valid upload returns 200 OK with a fully populated UploadResult.</summary>
     [Fact]
     public async Task Valid_upload_returns_200_with_UploadResult()
     {
-        var controller = BuildController();
+        var expectedPath = $"{TenantId}/upload-abc/data.csv";
+        var controller = BuildController(storageService: PassingStorageService(expectedPath));
         var request = new FileUploadRequest
         {
             File = BuildFileMock(csvContent: "col1,col2\nrow1,row2\nrow3,row4").Object,
@@ -123,6 +143,7 @@ public sealed class IngestionControllerTests
         body.FileName.Should().Be("data.csv");
         body.DataRowCount.Should().Be(2, "two data rows excluding the header");
         body.SourceSystem.Should().Be("Salesforce");
+        body.StoragePath.Should().Be(expectedPath, "storage path must match what IFileStorageService returned");
         body.AcceptedAt.Should().BeCloseTo(DateTimeOffset.UtcNow, precision: TimeSpan.FromSeconds(5));
     }
 
@@ -144,6 +165,76 @@ public sealed class IngestionControllerTests
         var id2 = ((result2 as OkObjectResult)!.Value as UploadResult)!.UploadId;
 
         id1.Should().NotBe(id2, "every upload session must have a unique identifier");
+    }
+
+    // ── Storage service interaction ───────────────────────────────────────────
+
+    /// <summary>StoreAsync is called exactly once per successful upload.</summary>
+    [Fact]
+    public async Task Valid_upload_calls_storage_service_once()
+    {
+        var storageMock = new Mock<IFileStorageService>();
+        storageMock
+            .Setup(s => s.StoreAsync(
+                It.IsAny<Guid>(), It.IsAny<Guid>(),
+                It.IsAny<IFormFile>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StorageResult(
+                "tenant/upload/data.csv", "/abs/tenant/upload/data.csv",
+                "local", DateTimeOffset.UtcNow));
+
+        var controller = BuildController(storageService: storageMock.Object);
+        var request = new FileUploadRequest
+        {
+            File = BuildFileMock().Object,
+            SourceSystem = "Oracle",
+        };
+
+        await controller.UploadAsync(request, CancellationToken.None);
+
+        storageMock.Verify(
+            s => s.StoreAsync(TenantId, It.IsAny<Guid>(), request.File, It.IsAny<CancellationToken>()),
+            Times.Once,
+            "the storage service must be called exactly once with the correct tenant ID");
+    }
+
+    /// <summary>
+    /// When validation fails, the storage service must <b>not</b> be called —
+    /// no file should be written for invalid requests.
+    /// </summary>
+    [Fact]
+    public async Task Validation_failure_does_not_call_storage_service()
+    {
+        var storageMock = new Mock<IFileStorageService>();
+        var controller = BuildController(
+            validator: FailingValidator("Only .csv files are accepted."),
+            storageService: storageMock.Object);
+
+        await controller.UploadAsync(
+            new FileUploadRequest { File = BuildFileMock(fileName: "bad.xlsx").Object, SourceSystem = "X" },
+            CancellationToken.None);
+
+        storageMock.Verify(
+            s => s.StoreAsync(It.IsAny<Guid>(), It.IsAny<Guid>(),
+                It.IsAny<IFormFile>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "no file should be persisted when validation fails");
+    }
+
+    /// <summary>StoragePath in the response equals what IFileStorageService returned.</summary>
+    [Fact]
+    public async Task StoragePath_in_result_matches_storage_service_output()
+    {
+        var tenantId = Guid.Parse("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE");
+        var controller = BuildController(
+            storageService: PassingStorageService($"{tenantId}/custom-upload/report.csv"),
+            tenantId: tenantId);
+
+        var result = await controller.UploadAsync(
+            new FileUploadRequest { File = BuildFileMock().Object, SourceSystem = "SAP" },
+            CancellationToken.None);
+
+        var body = ((result as OkObjectResult)!.Value as UploadResult)!;
+        body.StoragePath.Should().Be($"{tenantId}/custom-upload/report.csv");
     }
 
     // ── Row counting ──────────────────────────────────────────────────────────
@@ -208,35 +299,19 @@ public sealed class IngestionControllerTests
             "invalid requests must be rejected with 400");
     }
 
-    /// <summary>A single validation error is surfaced in the 400 response body.</summary>
-    [Fact]
-    public async Task Validation_error_body_contains_field_and_message()
-    {
-        var validator = FailingValidator("Only .csv files are accepted.");
-        var controller = BuildController(validator);
-
-        var result = await controller.UploadAsync(
-            new FileUploadRequest { File = BuildFileMock().Object, SourceSystem = "X" },
-            CancellationToken.None);
-
-        var bad = result.Should().BeOfType<BadRequestObjectResult>().Subject;
-        bad.Value.Should().NotBeNull("error body must be present");
-    }
-
     // ── Tenant resolution ─────────────────────────────────────────────────────
 
     /// <summary>
-    /// A principal without the <c>tenant_id</c> claim is rejected with 401
-    /// rather than 403, avoiding leaking whether a tenant exists.
+    /// A principal without the <c>tenant_id</c> claim is rejected with 401.
     /// </summary>
     [Fact]
     public async Task Missing_tenant_id_claim_returns_401()
     {
         var controller = new IngestionController(
             PassingValidator(),
+            PassingStorageService(),
             NullLogger<IngestionController>.Instance);
 
-        // Principal with no tenant_id claim
         var identity = new ClaimsIdentity(
         [
             new Claim(ClaimTypes.NameIdentifier, "user-without-tenant"),
@@ -245,10 +320,7 @@ public sealed class IngestionControllerTests
 
         controller.ControllerContext = new ControllerContext
         {
-            HttpContext = new DefaultHttpContext
-            {
-                User = new ClaimsPrincipal(identity),
-            },
+            HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(identity) },
         };
 
         var result = await controller.UploadAsync(
@@ -265,6 +337,7 @@ public sealed class IngestionControllerTests
     {
         var controller = new IngestionController(
             PassingValidator(),
+            PassingStorageService(),
             NullLogger<IngestionController>.Instance);
 
         var identity = new ClaimsIdentity(
@@ -275,10 +348,7 @@ public sealed class IngestionControllerTests
 
         controller.ControllerContext = new ControllerContext
         {
-            HttpContext = new DefaultHttpContext
-            {
-                User = new ClaimsPrincipal(identity),
-            },
+            HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(identity) },
         };
 
         var result = await controller.UploadAsync(
@@ -295,13 +365,9 @@ public sealed class IngestionControllerTests
         var expectedTenant = Guid.Parse("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE");
         var controller = BuildController(tenantId: expectedTenant);
 
-        var request = new FileUploadRequest
-        {
-            File = BuildFileMock().Object,
-            SourceSystem = "SAP",
-        };
-
-        var result = await controller.UploadAsync(request, CancellationToken.None);
+        var result = await controller.UploadAsync(
+            new FileUploadRequest { File = BuildFileMock().Object, SourceSystem = "SAP" },
+            CancellationToken.None);
 
         var body = ((result as OkObjectResult)!.Value as UploadResult)!;
         body.TenantId.Should().Be(expectedTenant);

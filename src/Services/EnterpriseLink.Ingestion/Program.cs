@@ -1,4 +1,5 @@
 using EnterpriseLink.Ingestion.Configuration;
+using EnterpriseLink.Ingestion.Extensions;
 using EnterpriseLink.Ingestion.Models;
 using EnterpriseLink.Ingestion.Validation;
 using FluentValidation;
@@ -74,6 +75,11 @@ try
         .AddAuthentication()
         .AddMicrosoftIdentityWebApi(
             builder.Configuration.GetSection("AzureAd"));
+
+    // ── File Storage ──────────────────────────────────────────────────────────
+    // Provider selected from FileStorage:Provider config ("local" default).
+    // Swap to "azureblob" in future without touching controller code.
+    builder.Services.AddFileStorage(builder.Configuration);
 
     // ── FluentValidation ──────────────────────────────────────────────────────
     // Registers all validators in this assembly. FileUploadRequestValidator

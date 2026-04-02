@@ -7,6 +7,12 @@ namespace EnterpriseLink.Ingestion.Models;
 /// The <see cref="UploadId"/> is the stable reference clients use to poll
 /// for processing status once the Worker service picks up the job.
 /// </para>
+///
+/// <para>
+/// The <see cref="StoragePath"/> is the tenant-scoped relative path at which the raw
+/// file has been persisted. It is safe to log and return to callers; it does not
+/// expose filesystem topology or absolute server paths.
+/// </para>
 /// </summary>
 /// <param name="UploadId">
 /// Unique identifier for this upload session. Clients present this GUID to query
@@ -27,8 +33,16 @@ namespace EnterpriseLink.Ingestion.Models;
 /// The upstream system of record that produced the file,
 /// as provided in the <c>sourceSystem</c> form field.
 /// </param>
+/// <param name="StoragePath">
+/// Relative storage path where the raw file has been persisted.
+/// Format: <c>{tenantId}/{uploadId}/{fileName}</c>.
+/// <para>
+/// For the <c>local</c> provider this is a filesystem path fragment.
+/// For the <c>azureblob</c> provider (future) this will be a blob name.
+/// </para>
+/// </param>
 /// <param name="AcceptedAt">
-/// UTC timestamp at which the server accepted and validated the file.
+/// UTC timestamp at which the server accepted, validated, and stored the file.
 /// </param>
 public sealed record UploadResult(
     Guid UploadId,
@@ -37,4 +51,5 @@ public sealed record UploadResult(
     long FileSizeBytes,
     int DataRowCount,
     string SourceSystem,
+    string StoragePath,
     DateTimeOffset AcceptedAt);
