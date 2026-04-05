@@ -95,6 +95,26 @@ public sealed class FileUploadedEventConsumer : IConsumer<FileUploadedEvent>
                 "UploadId, TenantId, StoragePath and FileName are all required.");
         }
 
+        // ── Guard: UploadedAt must not be in the future ────────────────────────
+        // A future timestamp indicates a clock-skew issue on the publishing node, a
+        // maliciously crafted message, or a misconfigured time zone. Processing such
+        // a message would corrupt SLA tracking and dead-letter analysis timestamps.
+        // A 5-minute grace window absorbs normal NTP drift between microservice hosts.
+        const int clockSkewGraceMinutes = 5;
+        if (message.UploadedAt > DateTimeOffset.UtcNow.AddMinutes(clockSkewGraceMinutes))
+        {
+            _logger.LogError(
+                "Received FileUploadedEvent with a future UploadedAt timestamp — " +
+                "possible clock skew or tampered message. " +
+                "MessageId={MessageId} UploadId={UploadId} UploadedAt={UploadedAt} UtcNow={UtcNow}",
+                context.MessageId, message.UploadId, message.UploadedAt, DateTimeOffset.UtcNow);
+
+            throw new InvalidOperationException(
+                $"FileUploadedEvent {context.MessageId} has a future UploadedAt " +
+                $"({message.UploadedAt:O}) which exceeds the allowed clock-skew " +
+                $"grace of {clockSkewGraceMinutes} minutes.");
+        }
+
         // ── Step 2: Log structured receipt ────────────────────────────────────
         // All properties are logged as named fields so Seq / Elastic can correlate
         // ingestion logs (from the Ingestion service) with processing logs (here)

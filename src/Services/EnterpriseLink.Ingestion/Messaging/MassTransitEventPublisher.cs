@@ -58,6 +58,10 @@ public sealed class MassTransitEventPublisher : IEventPublisher
     public async Task PublishAsync<TEvent>(TEvent @event, CancellationToken cancellationToken = default)
         where TEvent : class
     {
+        // Null events would produce an untyped message in MassTransit and cause opaque
+        // serialisation errors on the broker. Fail fast here with a clear argument error.
+        ArgumentNullException.ThrowIfNull(@event);
+
         var eventType = typeof(TEvent).Name;
 
         _logger.LogInformation(

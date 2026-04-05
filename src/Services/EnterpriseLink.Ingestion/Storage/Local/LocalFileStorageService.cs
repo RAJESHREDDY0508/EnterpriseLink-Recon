@@ -28,6 +28,11 @@ namespace EnterpriseLink.Ingestion.Storage.Local;
 /// <para><b>Concurrency</b></para>
 /// Because every upload writes to a unique <c>{uploadId}</c> directory, parallel
 /// uploads from the same tenant never contend on the same path.
+///
+/// <para><b>Partial-file cleanup</b></para>
+/// If <see cref="StoreAsync"/> is cancelled or throws after creating the target file,
+/// the incomplete file is deleted before the exception propagates. This prevents
+/// orphaned zero- or partial-byte files from accumulating on disk.
 /// </summary>
 public sealed class LocalFileStorageService : IFileStorageService
 {
@@ -41,6 +46,11 @@ public sealed class LocalFileStorageService : IFileStorageService
     /// Strongly-typed local storage options providing the <c>BasePath</c>.
     /// </param>
     /// <param name="logger">Structured logger.</param>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when <c>BasePath</c> points to an existing file (not a directory).
+    /// A misconfigured path would cause all subsequent file writes to fail with
+    /// unhelpful OS errors, so the service fails fast at construction time.
+    /// </exception>
     public LocalFileStorageService(
         IOptions<LocalStorageOptions> options,
         ILogger<LocalFileStorageService> logger)
@@ -52,6 +62,16 @@ public sealed class LocalFileStorageService : IFileStorageService
         _basePath = Path.IsPathRooted(options.Value.BasePath)
             ? options.Value.BasePath
             : Path.Combine(AppContext.BaseDirectory, options.Value.BasePath);
+
+        // Guard: BasePath must not already exist as a plain file. If it does, every
+        // Directory.CreateDirectory call will throw an opaque UnauthorizedAccessException.
+        // Detecting the misconfiguration at startup produces a clear failure message.
+        if (File.Exists(_basePath))
+        {
+            throw new InvalidOperationException(
+                $"LocalFileStorageService: BasePath '{_basePath}' exists as a file. " +
+                "BasePath must be a directory. Update 'FileStorage:Local:BasePath' in configuration.");
+        }
 
         _logger.LogInformation(
             "LocalFileStorageService initialised. BasePath={BasePath}", _basePath);
@@ -95,16 +115,47 @@ public sealed class LocalFileStorageService : IFileStorageService
             fullPath, file.Length);
 
         // Stream the file content — never load entirely into memory.
-        await using var sourceStream = file.OpenReadStream();
-        await using var targetStream = new FileStream(
-            fullPath,
-            FileMode.CreateNew,
-            FileAccess.Write,
-            FileShare.None,
-            bufferSize: 81_920, // 80 KB — default CopyToAsync buffer
-            useAsync: true);
+        // Any exception (cancellation, disk-full, I/O error) after the file is created
+        // leaves an incomplete file on disk. The finally block deletes it so callers
+        // never see a partial write that might be mistaken for a valid stored file.
+        var fileCreated = false;
+        try
+        {
+            await using var sourceStream = file.OpenReadStream();
+            await using var targetStream = new FileStream(
+                fullPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 81_920, // 80 KB — default CopyToAsync buffer
+                useAsync: true);
 
-        await sourceStream.CopyToAsync(targetStream, cancellationToken);
+            fileCreated = true;
+            await sourceStream.CopyToAsync(targetStream, cancellationToken);
+        }
+        catch
+        {
+            // Attempt to remove the partial file so the caller can retry cleanly.
+            if (fileCreated && File.Exists(fullPath))
+            {
+                try
+                {
+                    File.Delete(fullPath);
+                    _logger.LogWarning(
+                        "Partial file deleted after failed write. FullPath={FullPath}",
+                        fullPath);
+                }
+                catch (Exception deleteEx)
+                {
+                    // Log but do not mask the original exception.
+                    _logger.LogError(deleteEx,
+                        "Failed to delete partial file after write error. " +
+                        "Manual cleanup required. FullPath={FullPath}", fullPath);
+                }
+            }
+
+            throw;
+        }
 
         var storedAt = DateTimeOffset.UtcNow;
 

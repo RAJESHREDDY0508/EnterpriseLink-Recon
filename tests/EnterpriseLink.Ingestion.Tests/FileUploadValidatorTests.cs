@@ -274,6 +274,62 @@ public sealed class FileUploadValidatorTests
         result.IsValid.Should().BeTrue($"SourceSystem '{sourceSystem}' should be valid");
     }
 
+    /// <summary>SourceSystem that is only whitespace (e.g. "   ") is rejected.</summary>
+    [Theory]
+    [InlineData("   ")]
+    [InlineData("\t")]
+    [InlineData("  \n  ")]
+    public async Task Whitespace_only_SourceSystem_fails_validation(string sourceSystem)
+    {
+        var validator = BuildValidator();
+        var request = ValidRequest();
+        request.SourceSystem = sourceSystem;
+
+        var result = await validator.ValidateAsync(request);
+
+        result.IsValid.Should().BeFalse(
+            "a whitespace-only SourceSystem is semantically empty and must be rejected");
+        result.Errors.Should().Contain(e =>
+            e.PropertyName == "SourceSystem",
+            "the SourceSystem field must carry the validation failure");
+    }
+
+    // ── FileName null guard ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// A null FileName must produce a clear validation error rather than a
+    /// NullReferenceException from the extension check.
+    /// </summary>
+    [Fact]
+    public async Task Null_FileName_produces_validation_error_not_exception()
+    {
+        var validator = BuildValidator();
+        var fileMock = BuildFileMock(fileName: null!);
+
+        // Set FileName to null explicitly — some HTTP clients omit the filename header.
+        fileMock.Setup(f => f.FileName).Returns((string)null!);
+
+        var request = ValidRequest(fileMock.Object);
+        var result = await validator.ValidateAsync(request);
+
+        result.IsValid.Should().BeFalse("a null FileName must fail validation, not throw");
+        result.Errors.Should().Contain(e =>
+            e.PropertyName == "File.FileName",
+            "the FileName field must carry the error message");
+    }
+
+    /// <summary>An empty string FileName is rejected.</summary>
+    [Fact]
+    public async Task Empty_FileName_fails_validation()
+    {
+        var validator = BuildValidator();
+        var fileMock = BuildFileMock(fileName: string.Empty);
+        var result = await validator.ValidateAsync(ValidRequest(fileMock.Object));
+
+        result.IsValid.Should().BeFalse("an empty FileName must fail validation");
+        result.Errors.Should().Contain(e => e.PropertyName == "File.FileName");
+    }
+
     // ── Description ───────────────────────────────────────────────────────────
 
     /// <summary>Null Description is accepted (optional field).</summary>

@@ -159,6 +159,25 @@ public sealed class IngestionController : ControllerBase
         var storageResult = await _storageService.StoreAsync(
             tenantId, uploadId, request.File, cancellationToken);
 
+        // ── Guard: verify storage returned a usable path before publishing ─────
+        // A null or empty RelativePath means the storage layer failed silently.
+        // Publishing an event with an empty StoragePath would cause every Worker
+        // retry to fail and ultimately dead-letter the message. Reject early here
+        // so the caller receives a 500 rather than a silent data-integrity hole.
+        if (string.IsNullOrWhiteSpace(storageResult.RelativePath))
+        {
+            _logger.LogError(
+                "Storage service returned a blank RelativePath. " +
+                "UploadId={UploadId} TenantId={TenantId} FileName={FileName}",
+                uploadId, tenantId, request.File.FileName);
+
+            return StatusCode(StatusCodes.Status500InternalServerError, new
+            {
+                error = "The file was stored but the storage path could not be determined. " +
+                        "The upload cannot proceed.",
+            });
+        }
+
         // ── Step 5: Publish integration event to RabbitMQ ────────────────────
         // Non-blocking from the client's perspective: the response is returned
         // immediately after publish. Worker service processes the file asynchronously.

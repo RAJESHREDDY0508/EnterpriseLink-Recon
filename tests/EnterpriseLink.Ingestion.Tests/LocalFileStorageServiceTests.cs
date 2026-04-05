@@ -215,4 +215,120 @@ public sealed class LocalFileStorageServiceTests : IDisposable
         result.FullPath.Should().NotContain("..",
             "directory traversal sequences must be stripped from the file name");
     }
+
+    // ── Partial-file cleanup on exception ─────────────────────────────────────
+
+    /// <summary>
+    /// Custom <see cref="Stream"/> that throws <see cref="IOException"/> on every
+    /// read operation, simulating a mid-copy disk or network failure.
+    /// Moq cannot reliably intercept <c>CopyToAsync</c> because the BCL calls
+    /// internal buffer-read paths; a real subclass is required.
+    /// </summary>
+    private sealed class BrokenReadStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new IOException("Simulated I/O error during CopyToAsync");
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) =>
+            Task.FromException<int>(new IOException("Simulated I/O error during CopyToAsync"));
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) =>
+            ValueTask.FromException<int>(new IOException("Simulated I/O error during CopyToAsync"));
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    /// <summary>
+    /// If <c>CopyToAsync</c> fails after the target file is created, the incomplete
+    /// file must be deleted so callers never see a partial write on disk.
+    /// </summary>
+    [Fact]
+    public async Task StoreAsync_deletes_partial_file_when_copy_throws()
+    {
+        var service = BuildService();
+        var tenantId = Guid.NewGuid();
+        var uploadId = Guid.NewGuid();
+
+        var fileMock = new Mock<IFormFile>();
+        fileMock.Setup(f => f.FileName).Returns("data.csv");
+        fileMock.Setup(f => f.Length).Returns(1024);
+        // BrokenReadStream throws IOException on every Read — the real stream subclass
+        // ensures CopyToAsync sees the exception regardless of which read path it uses.
+        fileMock.Setup(f => f.OpenReadStream()).Returns(new BrokenReadStream());
+
+        // Act — StoreAsync must throw and clean up.
+        var act = () => service.StoreAsync(tenantId, uploadId, fileMock.Object);
+        await act.Should().ThrowAsync<IOException>("the original exception must propagate");
+
+        // Assert — no partial file survives on disk.
+        var expectedDir = Path.Combine(_tempRoot, tenantId.ToString(), uploadId.ToString());
+        if (Directory.Exists(expectedDir))
+        {
+            Directory.GetFiles(expectedDir).Should().BeEmpty(
+                "the partial file must be deleted after a copy failure");
+        }
+    }
+
+    /// <summary>
+    /// When the upload token is cancelled the incomplete file is removed from disk.
+    /// Using a pre-cancelled token avoids fragile stream-mock timing issues —
+    /// <see cref="Stream.CopyToAsync(Stream, CancellationToken)"/> checks
+    /// <c>cancellationToken.IsCancellationRequested</c> before the first read,
+    /// so a pre-cancelled token triggers the cancellation path reliably.
+    /// </summary>
+    [Fact]
+    public async Task StoreAsync_deletes_partial_file_when_cancelled()
+    {
+        var service = BuildService();
+        var tenantId = Guid.NewGuid();
+        var uploadId = Guid.NewGuid();
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel(); // Cancel before StoreAsync is even called.
+
+        var file = BuildFileMock(); // Normal file — token cancels before any read.
+
+        var act = () => service.StoreAsync(tenantId, uploadId, file.Object, cts.Token);
+        await act.Should().ThrowAsync<OperationCanceledException>(
+            "a pre-cancelled token must cause CopyToAsync to throw OperationCanceledException");
+
+        var expectedDir = Path.Combine(_tempRoot, tenantId.ToString(), uploadId.ToString());
+        if (Directory.Exists(expectedDir))
+        {
+            Directory.GetFiles(expectedDir).Should().BeEmpty(
+                "any partially-created file must be deleted when the upload is cancelled");
+        }
+    }
+
+    // ── BasePath validation ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// If <c>BasePath</c> is configured to point to an existing file (not a directory),
+    /// the service constructor must throw <see cref="InvalidOperationException"/>
+    /// immediately — failing fast at startup rather than producing opaque errors on
+    /// every upload attempt.
+    /// </summary>
+    [Fact]
+    public void Constructor_throws_when_BasePath_is_an_existing_file()
+    {
+        // Create a file at the path that would be used as BasePath.
+        var filePath = Path.Combine(_tempRoot, "iam-a-file.txt");
+        File.WriteAllText(filePath, "not a directory");
+
+        var act = () => BuildService(basePath: filePath);
+
+        act.Should().Throw<InvalidOperationException>(
+            "BasePath pointing to a file must be detected at construction time")
+            .WithMessage("*BasePath*exists as a file*");
+    }
 }

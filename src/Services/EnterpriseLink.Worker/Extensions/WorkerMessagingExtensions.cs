@@ -82,11 +82,24 @@ public static class WorkerMessagingExtensions
             // ── Transport: RabbitMQ ───────────────────────────────────────────
             bus.UsingRabbitMq((ctx, cfg) =>
             {
-                cfg.Host(opts.Host, opts.VirtualHost, h =>
+                // Wrap host configuration so that broker startup exceptions never
+                // expose raw credentials in stack traces or application logs.
+                try
                 {
-                    h.Username(opts.Username);
-                    h.Password(opts.Password);
-                });
+                    cfg.Host(opts.Host, opts.VirtualHost, h =>
+                    {
+                        h.Username(opts.Username);
+                        h.Password(opts.Password);
+                    });
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to configure RabbitMQ host '{opts.Host}/{opts.VirtualHost}' " +
+                        $"for user '{opts.Username}'. " +
+                        "Check RabbitMQ connectivity and credentials in configuration. " +
+                        $"Inner: {ex.Message}", ex);
+                }
 
                 // ── Queue: FileUploadedEvent ───────────────────────────────────
                 // Explicit queue name keeps it stable across assembly renames.

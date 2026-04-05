@@ -229,4 +229,58 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
         var faults = _harness.Published.Select<Fault<FileUploadedEvent>>().ToList();
         faults.Should().NotBeEmpty("MassTransit must publish a Fault<FileUploadedEvent> to the error topic");
     }
+
+    // ── UploadedAt future-date guard ──────────────────────────────────────────
+
+    /// <summary>
+    /// An event whose <c>UploadedAt</c> is more than 5 minutes in the future
+    /// must be faulted — it indicates clock skew or a tampered message that would
+    /// corrupt SLA tracking and dead-letter analysis timestamps.
+    /// </summary>
+    [Fact]
+    public async Task Consume_event_with_future_UploadedAt_beyond_grace_faults()
+    {
+        // UploadedAt 10 minutes in the future — well beyond the 5-minute clock-skew grace.
+        var evt = ValidEvent() with { UploadedAt = DateTimeOffset.UtcNow.AddMinutes(10) };
+
+        await _harness.Bus.Publish(evt);
+        await Task.Delay(500);
+
+        (await _harness.Published.Any<Fault<FileUploadedEvent>>())
+            .Should().BeTrue(
+                "an UploadedAt timestamp far in the future must cause a fault");
+    }
+
+    /// <summary>
+    /// An event whose <c>UploadedAt</c> is within the 5-minute clock-skew grace window
+    /// must be accepted — this accommodates normal NTP drift between microservice hosts.
+    /// </summary>
+    [Fact]
+    public async Task Consume_event_with_UploadedAt_within_grace_window_succeeds()
+    {
+        // UploadedAt 2 minutes in the future — within the 5-minute grace window.
+        var evt = ValidEvent() with { UploadedAt = DateTimeOffset.UtcNow.AddMinutes(2) };
+
+        await _harness.Bus.Publish(evt);
+        await _harness.Consumed.Any<FileUploadedEvent>();
+
+        (await _harness.Published.Any<Fault<FileUploadedEvent>>())
+            .Should().BeFalse(
+                "a timestamp within the clock-skew grace window must not cause a fault");
+    }
+
+    /// <summary>
+    /// A past <c>UploadedAt</c> timestamp (normal case) must always be accepted.
+    /// </summary>
+    [Fact]
+    public async Task Consume_event_with_past_UploadedAt_succeeds()
+    {
+        var evt = ValidEvent() with { UploadedAt = DateTimeOffset.UtcNow.AddHours(-1) };
+
+        await _harness.Bus.Publish(evt);
+        await _harness.Consumed.Any<FileUploadedEvent>();
+
+        (await _harness.Published.Any<Fault<FileUploadedEvent>>())
+            .Should().BeFalse("a past UploadedAt timestamp is the normal case and must not fault");
+    }
 }

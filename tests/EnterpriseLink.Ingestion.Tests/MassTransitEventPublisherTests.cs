@@ -198,4 +198,30 @@ public sealed class MassTransitEventPublisherTests
         await act.Should().NotThrowAsync(
             "IEventPublisher.PublishAsync is generic and must work for any reference type");
     }
+
+    // ── Null event guard ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Passing a null event must throw <see cref="ArgumentNullException"/> immediately —
+    /// before touching the broker — so the call-site gets a clear error rather than an
+    /// opaque MassTransit serialisation failure.
+    /// </summary>
+    [Fact]
+    public async Task PublishAsync_throws_ArgumentNullException_for_null_event()
+    {
+        var endpointMock = new Mock<IPublishEndpoint>();
+        var publisher = BuildPublisher(endpointMock.Object);
+
+        FileUploadedEvent? nullEvent = null;
+        var act = () => publisher.PublishAsync(nullEvent!);
+
+        await act.Should().ThrowAsync<ArgumentNullException>(
+            "null events must be rejected immediately with a clear argument error");
+
+        // The broker must never be called when the argument is null.
+        endpointMock.Verify(
+            e => e.Publish(It.IsAny<FileUploadedEvent>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "IPublishEndpoint.Publish must not be called when the event is null");
+    }
 }

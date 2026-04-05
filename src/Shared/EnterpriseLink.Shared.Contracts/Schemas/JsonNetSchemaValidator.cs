@@ -109,6 +109,19 @@ public sealed class JsonNetSchemaValidator : IEventSchemaValidator
 
         using var reader = new StreamReader(stream);
         var schemaJson = reader.ReadToEnd();
-        return JsonSchema.FromText(schemaJson);
+
+        // Wrap JsonSchema.FromText so that a corrupt embedded resource produces a clear
+        // InvalidOperationException (caught by the caller's try/catch) rather than an
+        // unhandled JsonException that bypasses the error collection path.
+        try
+        {
+            return JsonSchema.FromText(schemaJson);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Embedded schema resource '{resourceName}' contains malformed JSON Schema. " +
+                $"Verify the resource file is valid JSON Schema 2020-12. Inner: {ex.Message}", ex);
+        }
     }
 }

@@ -214,4 +214,79 @@ public sealed class FileUploadedEventSchemaTests
         result.IsValid.Should().BeFalse();
         result.Errors.Should().ContainSingle(e => e.Contains("not valid JSON"));
     }
+
+    // ── Guid.Empty exclusion ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// The all-zeros UUID (<c>00000000-0000-0000-0000-000000000000</c>) is a sentinel
+    /// value indicating an uninitialised C# <c>Guid</c>. Publishing it as an
+    /// <c>uploadId</c> would corrupt idempotency tracking.
+    /// </summary>
+    [Fact]
+    public void UploadId_of_Guid_Empty_fails_schema_validation()
+    {
+        var json = Serialise(ValidEvent())
+            .Replace(
+                "\"uploadId\":\"3fa85f64-5717-4562-b3fc-2c963f66afa6\"",
+                "\"uploadId\":\"00000000-0000-0000-0000-000000000000\"");
+
+        var result = Validator.Validate(json, KnownSchemas.FileUploadedEventV1);
+
+        result.IsValid.Should().BeFalse(
+            "Guid.Empty is explicitly excluded from uploadId to prevent uninitialised value propagation");
+    }
+
+    /// <summary>
+    /// The all-zeros UUID as <c>tenantId</c> would route all data to a phantom tenant,
+    /// corrupting every tenant isolation boundary in the system.
+    /// </summary>
+    [Fact]
+    public void TenantId_of_Guid_Empty_fails_schema_validation()
+    {
+        var json = Serialise(ValidEvent())
+            .Replace(
+                "\"tenantId\":\"11111111-1111-1111-1111-111111111111\"",
+                "\"tenantId\":\"00000000-0000-0000-0000-000000000000\"");
+
+        var result = Validator.Validate(json, KnownSchemas.FileUploadedEventV1);
+
+        result.IsValid.Should().BeFalse(
+            "Guid.Empty is explicitly excluded from tenantId to prevent cross-tenant data pollution");
+    }
+
+    // ── DataRowCount maximum ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// <c>dataRowCount</c> exceeding <see cref="int.MaxValue"/> (2,147,483,647) would
+    /// overflow the C# <c>int</c> property during JSON deserialisation, producing a
+    /// negative or incorrect count. The schema maximum guards against this.
+    /// </summary>
+    [Fact]
+    public void DataRowCount_exceeding_int_max_fails_maximum_constraint()
+    {
+        // 2,147,483,648 = int.MaxValue + 1
+        var json = Serialise(ValidEvent())
+            .Replace("\"dataRowCount\":98432", "\"dataRowCount\":2147483648");
+
+        var result = Validator.Validate(json, KnownSchemas.FileUploadedEventV1);
+
+        result.IsValid.Should().BeFalse(
+            "dataRowCount must not exceed Int32.MaxValue (2,147,483,647) to prevent C# int overflow");
+    }
+
+    /// <summary>
+    /// <c>dataRowCount</c> exactly at <see cref="int.MaxValue"/> is the boundary value
+    /// — must be accepted.
+    /// </summary>
+    [Fact]
+    public void DataRowCount_at_int_max_passes_maximum_constraint()
+    {
+        var json = Serialise(ValidEvent())
+            .Replace("\"dataRowCount\":98432", "\"dataRowCount\":2147483647");
+
+        var result = Validator.Validate(json, KnownSchemas.FileUploadedEventV1);
+
+        result.IsValid.Should().BeTrue(
+            $"dataRowCount of Int32.MaxValue is the allowed boundary. Errors: {string.Join("; ", result.Errors)}");
+    }
 }

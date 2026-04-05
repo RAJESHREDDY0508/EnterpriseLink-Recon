@@ -77,11 +77,25 @@ public static class MessagingServiceExtensions
             // ── Transport: RabbitMQ ───────────────────────────────────────────
             bus.UsingRabbitMq((ctx, cfg) =>
             {
-                cfg.Host(opts.Host, opts.VirtualHost, h =>
+                // Wrap host configuration so that if the broker throws during startup
+                // (e.g. wrong VirtualHost name) the exception message never contains the
+                // raw password. Credentials are replaced with a safe placeholder.
+                try
                 {
-                    h.Username(opts.Username);
-                    h.Password(opts.Password);
-                });
+                    cfg.Host(opts.Host, opts.VirtualHost, h =>
+                    {
+                        h.Username(opts.Username);
+                        h.Password(opts.Password);
+                    });
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to configure RabbitMQ host '{opts.Host}/{opts.VirtualHost}' " +
+                        $"for user '{opts.Username}'. " +
+                        "Check RabbitMQ connectivity and credentials in configuration. " +
+                        $"Inner: {ex.Message}", ex);
+                }
 
                 // ── Retry policy: exponential back-off ────────────────────────
                 // Applied to all Send/Publish operations from this bus instance.

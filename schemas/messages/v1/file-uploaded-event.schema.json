@@ -9,13 +9,15 @@
     "uploadId": {
       "type": "string",
       "format": "uuid",
-      "description": "Unique identifier for this upload session. Acts as the idempotency key — consumers must check whether this ID has already been processed before beginning work.",
+      "pattern": "^(?!00000000-0000-0000-0000-000000000000)[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "description": "Unique identifier for this upload session. Acts as the idempotency key — consumers must check whether this ID has already been processed before beginning work. The all-zeros UUID (Guid.Empty) is explicitly rejected as it indicates an uninitialised value.",
       "examples": ["3fa85f64-5717-4562-b3fc-2c963f66afa6"]
     },
     "tenantId": {
       "type": "string",
       "format": "uuid",
-      "description": "Internal EnterpriseLink tenant identifier. All rows parsed from the file must be persisted with this tenantId to enforce row-level tenant isolation.",
+      "pattern": "^(?!00000000-0000-0000-0000-000000000000)[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "description": "Internal EnterpriseLink tenant identifier. All rows parsed from the file must be persisted with this tenantId to enforce row-level tenant isolation. The all-zeros UUID (Guid.Empty) is explicitly rejected as it indicates an uninitialised value.",
       "examples": ["11111111-1111-1111-1111-111111111111"]
     },
     "storagePath": {
@@ -41,7 +43,8 @@
     "dataRowCount": {
       "type": "integer",
       "minimum": 0,
-      "description": "Number of data rows detected by the Ingestion service (header row excluded). Used by the Worker as a pre-validation hint for data integrity checks.",
+      "maximum": 2147483647,
+      "description": "Number of data rows detected by the Ingestion service (header row excluded). Used by the Worker as a pre-validation hint for data integrity checks. Maximum is Int32.MaxValue to match the C# int property on the event record.",
       "examples": [98432]
     },
     "sourceSystem": {
@@ -75,13 +78,18 @@
 
   "$defs": {},
 
-  "x-version": "1.0.0",
+  "x-version": "1.0.1",
   "x-owner": "ingestion-team",
   "x-changelog": [
     {
       "version": "1.0.0",
       "date": "2026-04-02",
       "changes": "Initial schema definition. All eight properties required. No additional properties permitted."
+    },
+    {
+      "version": "1.0.1",
+      "date": "2026-04-05",
+      "changes": "Added Guid.Empty exclusion pattern to uploadId and tenantId. Added maximum: 2147483647 to dataRowCount to match C# int boundary."
     }
   ]
 }

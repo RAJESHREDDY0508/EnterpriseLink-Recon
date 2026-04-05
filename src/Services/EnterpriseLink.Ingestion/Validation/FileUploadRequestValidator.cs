@@ -26,13 +26,16 @@ namespace EnterpriseLink.Ingestion.Validation;
 ///
 /// <para><b>Metadata rules</b></para>
 /// <list type="bullet">
-///   <item><description><c>SourceSystem</c> is required, 1–100 characters, alphanumeric + <c>-_</c> and spaces.</description></item>
+///   <item><description><c>SourceSystem</c> is required, 1–100 characters, alphanumeric + <c>-_</c> and spaces. Pure-whitespace values are rejected.</description></item>
 ///   <item><description><c>Description</c> is optional, maximum 500 characters.</description></item>
 /// </list>
 ///
 /// <para><b>Cascade behaviour</b></para>
 /// File-specific rules (size, extension, content-type) run only when <c>File</c> is
 /// not null, preventing NullReferenceExceptions from cascading rule chains.
+/// <c>FileName</c> is first checked for null/empty before the extension rule runs,
+/// so a null <c>FileName</c> produces a clear error rather than a
+/// <c>NullReferenceException</c>.
 /// </summary>
 public sealed class FileUploadRequestValidator : AbstractValidator<FileUploadRequest>
 {
@@ -76,9 +79,19 @@ public sealed class FileUploadRequestValidator : AbstractValidator<FileUploadReq
                 .WithMessage(x =>
                     $"File size {x.File.Length:N0} bytes exceeds the maximum allowed size of {maxBytes:N0} bytes ({maxBytes / 1_048_576} MB).");
 
+            // FileName: NotEmpty in its own RuleFor so the .When() on the extension
+            // check below does not inadvertently skip the NotEmpty check when the
+            // file name is null or empty (FluentValidation .When() applies to the
+            // entire preceding chain within a single RuleFor call).
+            RuleFor(x => x.File.FileName)
+                .NotEmpty()
+                .WithMessage("File name must not be null or empty.");
+
+            // Extension check: separate RuleFor so .When() only guards this rule.
             RuleFor(x => x.File.FileName)
                 .Must(name => Path.GetExtension(name)
                     .Equals(".csv", StringComparison.OrdinalIgnoreCase))
+                .When(x => !string.IsNullOrEmpty(x.File?.FileName))
                 .WithMessage("Only .csv files are accepted. Received: '{PropertyValue}'.");
 
             RuleFor(x => x.File.ContentType)
@@ -89,14 +102,25 @@ public sealed class FileUploadRequestValidator : AbstractValidator<FileUploadReq
         });
 
         // ── Metadata rules ───────────────────────────────────────────────────
+        // NotEmpty in its own RuleFor so the .When() on the chain below does not
+        // skip the required check when SourceSystem is null or empty string.
         RuleFor(x => x.SourceSystem)
             .NotEmpty()
-            .WithMessage("SourceSystem is required.")
+            .WithMessage("SourceSystem is required.");
+
+        // Pure-whitespace values (e.g. "   ") pass NotEmpty() but are semantically
+        // meaningless. Length and pattern checks run in the same chain.
+        // The .When() here applies only to this RuleFor (not to the NotEmpty above),
+        // so empty/null is already caught and we avoid double-failing on those inputs.
+        RuleFor(x => x.SourceSystem)
+            .Must(s => !string.IsNullOrWhiteSpace(s))
+            .WithMessage("SourceSystem must not be blank or whitespace-only.")
             .MaximumLength(100)
             .WithMessage("SourceSystem must not exceed 100 characters.")
             .Matches(@"^[a-zA-Z0-9\-_\s]+$")
             .WithMessage(
-                "SourceSystem may only contain letters, digits, hyphens, underscores, and spaces.");
+                "SourceSystem may only contain letters, digits, hyphens, underscores, and spaces.")
+            .When(x => !string.IsNullOrEmpty(x.SourceSystem));
 
         RuleFor(x => x.Description)
             .MaximumLength(500)
