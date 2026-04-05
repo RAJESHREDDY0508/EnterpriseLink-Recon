@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://enterpriselink.io/schemas/messages/v1/file-uploaded-event.schema.json",
+  "title": "FileUploadedEvent",
+  "description": "Integration event published by the EnterpriseLink Ingestion service when a CSV file has been successfully validated and durably stored. Consumed by the Worker service to begin asynchronous CSV parsing, row validation, and persistence.",
+  "type": "object",
+
+  "properties": {
+    "uploadId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this upload session. Acts as the idempotency key — consumers must check whether this ID has already been processed before beginning work.",
+      "examples": ["3fa85f64-5717-4562-b3fc-2c963f66afa6"]
+    },
+    "tenantId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Internal EnterpriseLink tenant identifier. All rows parsed from the file must be persisted with this tenantId to enforce row-level tenant isolation.",
+      "examples": ["11111111-1111-1111-1111-111111111111"]
+    },
+    "storagePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/].+/.+/.+$",
+      "description": "Relative storage path where the raw file has been persisted. Format: {tenantId}/{uploadId}/{fileName}. The Worker resolves the absolute path by combining this with the configured storage root.",
+      "examples": ["11111111-1111-1111-1111-111111111111/3fa85f64-5717-4562-b3fc-2c963f66afa6/q1-transactions.csv"]
+    },
+    "fileName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 260,
+      "description": "Original file name as provided by the client (sanitised by the storage service to strip path-traversal sequences).",
+      "examples": ["q1-transactions.csv"]
+    },
+    "fileSizeBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "File size in bytes as reported by the multipart boundary. Used by the Worker to validate the stored file was not truncated during transfer.",
+      "examples": [10485760]
+    },
+    "dataRowCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of data rows detected by the Ingestion service (header row excluded). Used by the Worker as a pre-validation hint for data integrity checks.",
+      "examples": [98432]
+    },
+    "sourceSystem": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[a-zA-Z0-9\\-_\\s]+$",
+      "description": "Identifies the upstream system of record that produced the file. Determines which column mapping and validation rules the Worker applies.",
+      "examples": ["Salesforce", "SAP-ERP", "Oracle_ERP"]
+    },
+    "uploadedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp at which the Ingestion service accepted, validated, and stored the file. Used for SLA tracking and dead-letter analysis.",
+      "examples": ["2026-04-02T09:15:00Z"]
+    }
+  },
+
+  "required": [
+    "uploadId",
+    "tenantId",
+    "storagePath",
+    "fileName",
+    "fileSizeBytes",
+    "dataRowCount",
+    "sourceSystem",
+    "uploadedAt"
+  ],
+
+  "additionalProperties": false,
+
+  "$defs": {},
+
+  "x-version": "1.0.0",
+  "x-owner": "ingestion-team",
+  "x-changelog": [
+    {
+      "version": "1.0.0",
+      "date": "2026-04-02",
+      "changes": "Initial schema definition. All eight properties required. No additional properties permitted."
+    }
+  ]
+}

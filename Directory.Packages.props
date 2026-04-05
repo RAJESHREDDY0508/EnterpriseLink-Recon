@@ -52,6 +52,8 @@
 
   <ItemGroup Label="Validation">
     <PackageVersion Include="FluentValidation.AspNetCore" Version="11.3.0" />
+    <!-- JSON Schema validation for message contract enforcement -->
+    <PackageVersion Include="JsonSchema.Net" Version="6.0.2" />
   </ItemGroup>
 
   <ItemGroup Label="Testing">

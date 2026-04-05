@@ -9,7 +9,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="JsonSchema.Net" />
     <PackageReference Include="MassTransit" />
+  </ItemGroup>
+
+  <!-- Embed JSON Schema files so they travel with the assembly at runtime -->
+  <ItemGroup>
+    <EmbeddedResource Include="Schemas\v1\file_uploaded_event.schema.json" />
   </ItemGroup>
 
 </Project>
