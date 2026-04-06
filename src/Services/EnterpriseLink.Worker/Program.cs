@@ -27,6 +27,12 @@ try
         .WriteTo.Console(outputTemplate:
             "[{Timestamp:HH:mm:ss} {Level:u3}] [{Service}] {Message:lj}{NewLine}{Exception}"));
 
+    // ── Storage resolver + CSV streaming parser ───────────────────────────────
+    // Registers IFileStorageResolver (resolves relative path → absolute path) and
+    // ICsvStreamingParser (CsvHelper-backed, IAsyncEnumerable, O(1) memory).
+    // Acceptance criteria: "Handles 5GB files" + "No memory overflow".
+    builder.Services.AddWorkerStorage(builder.Configuration);
+
     // ── Messaging (MassTransit + RabbitMQ) ───────────────────────────────────
     // Registers FileUploadedEventConsumer on the "file-uploaded-processing" queue.
     // MassTransit's IHostedService starts the consumer when the host starts.
