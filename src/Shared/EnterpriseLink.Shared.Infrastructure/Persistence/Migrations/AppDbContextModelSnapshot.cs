@@ -22,6 +22,69 @@ namespace EnterpriseLink.Shared.Infrastructure.Persistence.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("EnterpriseLink.Shared.Domain.Entities.InvalidTransaction", b =>
+                {
+                    b.Property<Guid>("InvalidTransactionId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValueSql("NEWSEQUENTIALID()");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("FailureReason")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<bool>("IsDeleted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.Property<string>("RawData")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("RowNumber")
+                        .HasColumnType("int");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("UploadId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ValidationErrors")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("InvalidTransactionId");
+
+                    b.HasIndex("TenantId")
+                        .HasDatabaseName("IX_InvalidTransactions_TenantId");
+
+                    b.HasIndex("UploadId")
+                        .HasDatabaseName("IX_InvalidTransactions_UploadId");
+
+                    b.HasIndex("TenantId", "UploadId")
+                        .HasDatabaseName("IX_InvalidTransactions_TenantId_UploadId");
+
+                    b.ToTable("InvalidTransactions", (string)null);
+                });
+
             modelBuilder.Entity("EnterpriseLink.Shared.Domain.Entities.ProcessedUpload", b =>
                 {
                     b.Property<Guid>("UploadId")
@@ -260,6 +323,17 @@ namespace EnterpriseLink.Shared.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("UX_Users_TenantId_Email");
 
                     b.ToTable("Users", (string)null);
+                });
+
+            modelBuilder.Entity("EnterpriseLink.Shared.Domain.Entities.InvalidTransaction", b =>
+                {
+                    b.HasOne("EnterpriseLink.Shared.Domain.Entities.Tenant", "Tenant")
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Tenant");
                 });
 
             modelBuilder.Entity("EnterpriseLink.Shared.Domain.Entities.ProcessedUpload", b =>

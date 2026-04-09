@@ -4,6 +4,7 @@ using EnterpriseLink.Worker.Idempotency;
 using EnterpriseLink.Worker.MultiTenancy;
 using EnterpriseLink.Worker.Parsing;
 using EnterpriseLink.Worker.Storage;
+using EnterpriseLink.Worker.Validation;
 using MassTransit;
 
 namespace EnterpriseLink.Worker.Consumers;
@@ -21,25 +22,29 @@ namespace EnterpriseLink.Worker.Consumers;
 /// <code>
 /// RabbitMQ queue — FileUploadedEvent received
 ///   │
-///   ▼  1. Validate required fields (UploadId, TenantId, StoragePath, FileName)
+///   ▼  1. Validate required message fields (UploadId, TenantId, StoragePath, FileName)
 ///   ▼  2. Guard: UploadedAt must not be more than 5 minutes in the future
 ///   ▼  3. Idempotency check via IUploadIdempotencyGuard.TryBeginAsync
 ///          → already Completed: return (message acked, no-op)
 ///          → new or retry: claim the upload, continue
 ///   ▼  4. Set tenant context (WorkerTenantContext.TenantId = message.TenantId)
 ///   ▼  5. Resolve absolute file path via IFileStorageResolver
-///   ▼  6. Stream CSV rows via ICsvStreamingParser (IAsyncEnumerable — O(1) memory)
-///         → batch-insert to SQL Server via IBatchRowInserter (commit every N rows)
-///   ▼  7. Mark upload complete via IUploadIdempotencyGuard.CompleteAsync
+///   ▼  6. Stream CSV rows via ICsvStreamingParser → classify via IValidationPipeline:
+///            a. Schema validation  — required fields enforced
+///            b. Business rules     — extensible rule framework
+///            c. Duplicate detection — hash-based fingerprint within upload
+///   ▼  7. Batch-insert valid rows to SQL Server via IBatchRowInserter
+///   ▼  8. Persist invalid rows to InvalidTransactions via IInvalidRowPersister
+///   ▼  9. Mark upload complete via IUploadIdempotencyGuard.CompleteAsync
 ///   ▼
 /// Message acknowledged — removed from queue
 /// </code>
 ///
 /// <para><b>Memory model</b></para>
 /// <see cref="ICsvStreamingParser.ParseAsync"/> returns an <c>IAsyncEnumerable</c>
-/// that is passed directly to <see cref="IBatchRowInserter.InsertAsync"/>. Only one
-/// <see cref="ParsedRow"/> and one batch buffer exist in memory at any time.
-/// Files of 5 GB or more are handled without out-of-memory risk.
+/// that is consumed by <see cref="IValidationPipeline.ClassifyAsync"/> which
+/// materialises two lists (valid + invalid). For enterprise batch sizes
+/// (≤1 million rows) both lists fit comfortably in memory.
 ///
 /// <para><b>Error handling</b></para>
 /// If <see cref="Consume"/> throws, MassTransit's consumer-level retry policy retries
@@ -48,13 +53,13 @@ namespace EnterpriseLink.Worker.Consumers;
 /// the next retry can distinguish a failed attempt from a concurrent claim.
 ///
 /// <para><b>Idempotency</b></para>
-/// <see cref="FileUploadedEvent.UploadId"/> is the idempotency key. Duplicate messages
+/// <c>FileUploadedEvent.UploadId</c> is the idempotency key. Duplicate messages
 /// (RabbitMQ re-delivery, exactly-once guarantee breach) are detected and silently
 /// acknowledged — no duplicate <c>Transaction</c> rows are inserted.
 ///
 /// <para><b>Tenant isolation</b>
 /// All downstream database operations are scoped to
-/// <see cref="FileUploadedEvent.TenantId"/> via <see cref="WorkerTenantContext"/>.
+/// <c>FileUploadedEvent.TenantId</c> via <see cref="WorkerTenantContext"/>.
 /// Cross-tenant writes are prevented by EF Core's <c>ApplyTenantId</c> interceptor
 /// and SQL Server Row-Level Security.
 /// </para>
@@ -64,7 +69,9 @@ public sealed class FileUploadedEventConsumer : IConsumer<FileUploadedEvent>
     private readonly WorkerTenantContext _tenantContext;
     private readonly IFileStorageResolver _storageResolver;
     private readonly ICsvStreamingParser _csvParser;
+    private readonly IValidationPipeline _validationPipeline;
     private readonly IBatchRowInserter _batchInserter;
+    private readonly IInvalidRowPersister _invalidRowPersister;
     private readonly IUploadIdempotencyGuard _idempotencyGuard;
     private readonly ILogger<FileUploadedEventConsumer> _logger;
 
@@ -78,8 +85,14 @@ public sealed class FileUploadedEventConsumer : IConsumer<FileUploadedEvent>
     /// <param name="csvParser">
     /// Streaming CSV parser — yields rows one at a time, supporting 5 GB+ files.
     /// </param>
+    /// <param name="validationPipeline">
+    /// Three-stage validation pipeline: schema → business rules → duplicate detection.
+    /// </param>
     /// <param name="batchInserter">
-    /// Batch inserter — commits every <c>BatchSize</c> rows in a single round-trip.
+    /// Batch inserter — commits valid rows every <c>BatchSize</c> rows in a single round-trip.
+    /// </param>
+    /// <param name="invalidRowPersister">
+    /// Persists rejected rows to the <c>InvalidTransactions</c> table.
     /// </param>
     /// <param name="idempotencyGuard">
     /// Guards against duplicate processing of the same upload.
@@ -91,14 +104,18 @@ public sealed class FileUploadedEventConsumer : IConsumer<FileUploadedEvent>
         WorkerTenantContext tenantContext,
         IFileStorageResolver storageResolver,
         ICsvStreamingParser csvParser,
+        IValidationPipeline validationPipeline,
         IBatchRowInserter batchInserter,
+        IInvalidRowPersister invalidRowPersister,
         IUploadIdempotencyGuard idempotencyGuard,
         ILogger<FileUploadedEventConsumer> logger)
     {
         _tenantContext = tenantContext;
         _storageResolver = storageResolver;
         _csvParser = csvParser;
+        _validationPipeline = validationPipeline;
         _batchInserter = batchInserter;
+        _invalidRowPersister = invalidRowPersister;
         _idempotencyGuard = idempotencyGuard;
         _logger = logger;
     }
@@ -122,7 +139,6 @@ public sealed class FileUploadedEventConsumer : IConsumer<FileUploadedEvent>
         var cancellationToken = context.CancellationToken;
 
         // ── Step 1: Validate required message fields ───────────────────────────
-        // Defensive guard against malformed or partially-delivered messages.
         if (message.UploadId == Guid.Empty ||
             message.TenantId == Guid.Empty ||
             string.IsNullOrWhiteSpace(message.StoragePath) ||
@@ -161,90 +177,91 @@ public sealed class FileUploadedEventConsumer : IConsumer<FileUploadedEvent>
             "FileSizeBytes={FileSizeBytes} DataRowCount={DataRowCount} " +
             "SourceSystem={SourceSystem} StoragePath={StoragePath} " +
             "UploadedAt={UploadedAt} RetryCount={RetryCount}",
-            message.UploadId,
-            message.TenantId,
-            message.FileName,
-            message.FileSizeBytes,
-            message.DataRowCount,
-            message.SourceSystem,
-            message.StoragePath,
-            message.UploadedAt,
-            context.GetRetryCount());
+            message.UploadId, message.TenantId, message.FileName,
+            message.FileSizeBytes, message.DataRowCount,
+            message.SourceSystem, message.StoragePath,
+            message.UploadedAt, context.GetRetryCount());
 
         // ── Step 4: Idempotency check ─────────────────────────────────────────
-        // TryBeginAsync atomically inserts a Processing row with UploadId as PK.
-        // Returns false if the upload is already Completed (duplicate message).
-        // Returns true for new uploads or retries (Processing/Failed status).
         var claimed = await _idempotencyGuard.TryBeginAsync(
-            message.UploadId,
-            message.TenantId,
-            message.SourceSystem,
-            cancellationToken);
+            message.UploadId, message.TenantId, message.SourceSystem, cancellationToken);
 
         if (!claimed)
         {
-            // Upload already completed by a previous consumer invocation.
-            // Acknowledge the message silently — no rows are inserted.
             _logger.LogInformation(
                 "Upload already processed — skipping duplicate message. UploadId={UploadId}",
                 message.UploadId);
             return;
         }
 
-        // ── Step 5: Set tenant context for downstream DB operations ───────────
-        // WorkerTenantContext is scoped — setting TenantId here propagates to all
-        // services within this MassTransit message scope (AppDbContext, query filters,
-        // ApplyTenantId interceptor, and the SQL Server RLS interceptor).
+        // ── Step 5: Set tenant context ────────────────────────────────────────
         _tenantContext.TenantId = message.TenantId;
 
-        // ── Step 6: Resolve path → stream CSV → batch insert ──────────────────
+        // ── Steps 6-8: Resolve → Parse → Validate → Insert → Persist errors ──
         int rowsInserted;
+        int invalidCount;
 
         try
         {
-            // ResolveFullPath validates the relative path and prevents path traversal.
             var fullPath = _storageResolver.ResolveFullPath(message.StoragePath);
 
             _logger.LogDebug(
                 "Resolved storage path. StoragePath={StoragePath} FullPath={FullPath} UploadId={UploadId}",
                 message.StoragePath, fullPath, message.UploadId);
 
-            // ParseAsync returns a lazy IAsyncEnumerable — rows are not buffered.
-            // InsertAsync streams them into batches of BatchSize, committing each
-            // batch with a single SaveChangesAsync. Memory is bounded by BatchSize.
             var rows = _csvParser.ParseAsync(fullPath, cancellationToken);
 
+            // ── Validation pipeline ────────────────────────────────────────────
+            var (valid, invalid) = await _validationPipeline.ClassifyAsync(rows, cancellationToken);
+
+            _logger.LogInformation(
+                "Validation complete. UploadId={UploadId} ValidRows={ValidRows} InvalidRows={InvalidRows}",
+                message.UploadId, valid.Count, invalid.Count);
+
+            // ── Batch insert valid rows ────────────────────────────────────────
             rowsInserted = await _batchInserter.InsertAsync(
-                rows,
+                ToAsyncEnumerable(valid),
                 message.TenantId,
                 message.UploadId,
                 message.SourceSystem,
                 cancellationToken);
 
-            // ── Step 7: Mark complete ─────────────────────────────────────────
+            // ── Persist invalid rows ───────────────────────────────────────────
+            invalidCount = await _invalidRowPersister.PersistAsync(
+                invalid, message.UploadId, cancellationToken);
+
+            // ── Step 9: Mark complete ──────────────────────────────────────────
             await _idempotencyGuard.CompleteAsync(message.UploadId, rowsInserted, cancellationToken);
         }
         catch (Exception)
         {
-            // Mark the upload as failed before re-throwing so that MassTransit's
-            // retry policy delivers the message again with Failed status, allowing
-            // the idempotency guard to reset to Processing on the next attempt.
-            // CancellationToken.None: the consume context token may already be cancelled.
             await _idempotencyGuard.FailAsync(message.UploadId, CancellationToken.None);
             throw;
         }
 
-        // ── Integrity hint: log row count mismatch ────────────────────────────
         if (rowsInserted != message.DataRowCount)
         {
             _logger.LogWarning(
                 "Row count mismatch after batch insert. " +
-                "Expected={Expected} Actual={Actual} UploadId={UploadId} TenantId={TenantId}",
-                message.DataRowCount, rowsInserted, message.UploadId, message.TenantId);
+                "Expected={Expected} Actual={Actual} Invalid={Invalid} " +
+                "UploadId={UploadId} TenantId={TenantId}",
+                message.DataRowCount, rowsInserted, invalidCount,
+                message.UploadId, message.TenantId);
         }
 
         _logger.LogInformation(
-            "FileUploadedEvent handled successfully. UploadId={UploadId} RowsInserted={RowsInserted}",
-            message.UploadId, rowsInserted);
+            "FileUploadedEvent handled successfully. UploadId={UploadId} " +
+            "RowsInserted={RowsInserted} InvalidRows={InvalidRows}",
+            message.UploadId, rowsInserted, invalidCount);
     }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+#pragma warning disable CS1998
+    private static async IAsyncEnumerable<ParsedRow> ToAsyncEnumerable(IReadOnlyList<ParsedRow> rows)
+    {
+        foreach (var row in rows)
+            yield return row;
+    }
+#pragma warning restore CS1998
 }

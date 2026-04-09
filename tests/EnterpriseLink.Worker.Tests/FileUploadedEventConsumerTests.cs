@@ -1,10 +1,12 @@
 using EnterpriseLink.Shared.Contracts.Events;
+using EnterpriseLink.Shared.Domain.Validation;
 using EnterpriseLink.Worker.Batch;
 using EnterpriseLink.Worker.Consumers;
 using EnterpriseLink.Worker.Idempotency;
 using EnterpriseLink.Worker.MultiTenancy;
 using EnterpriseLink.Worker.Parsing;
 using EnterpriseLink.Worker.Storage;
+using EnterpriseLink.Worker.Validation;
 using FluentAssertions;
 using MassTransit;
 using MassTransit.Testing;
@@ -30,6 +32,7 @@ namespace EnterpriseLink.Worker.Tests;
 ///   <item><description>Handles messages — valid events succeed, invalid events fault.</description></item>
 ///   <item><description>Commit every N records — inserter is invoked and wired to the parser.</description></item>
 ///   <item><description>Duplicate processing avoided — idempotency guard controls flow.</description></item>
+///   <item><description>Required fields enforced / Invalid records stored separately — validation pipeline wired.</description></item>
 /// </list>
 /// </summary>
 public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
@@ -41,7 +44,9 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
     // Exposed so individual tests can reconfigure return values.
     private readonly Mock<IFileStorageResolver> _resolverMock;
     private readonly Mock<ICsvStreamingParser> _parserMock;
+    private readonly Mock<IValidationPipeline> _pipelineMock;
     private readonly Mock<IBatchRowInserter> _inserterMock;
+    private readonly Mock<IInvalidRowPersister> _invalidPersisterMock;
     private readonly Mock<IUploadIdempotencyGuard> _idempotencyMock;
 
     public FileUploadedEventConsumerTests()
@@ -59,7 +64,17 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
             .Setup(p => p.ParseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Returns(EmptyAsyncEnumerable());
 
-        // Default: claim succeeds (TryBeginAsync = true), so processing proceeds.
+        // Default pipeline: returns all rows as valid, no invalid rows.
+        _pipelineMock = new Mock<IValidationPipeline>();
+        _pipelineMock
+            .Setup(p => p.ClassifyAsync(
+                It.IsAny<IAsyncEnumerable<ParsedRow>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((
+                (IReadOnlyList<ParsedRow>)Array.Empty<ParsedRow>(),
+                (IReadOnlyList<(ParsedRow, IReadOnlyList<ValidationError>, string)>)
+                    Array.Empty<(ParsedRow, IReadOnlyList<ValidationError>, string)>()));
+
         _inserterMock = new Mock<IBatchRowInserter>();
         _inserterMock
             .Setup(i => i.InsertAsync(
@@ -69,6 +84,14 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(0); // 0 matches ValidEvent().DataRowCount — no mismatch warning
+
+        _invalidPersisterMock = new Mock<IInvalidRowPersister>();
+        _invalidPersisterMock
+            .Setup(p => p.PersistAsync(
+                It.IsAny<IReadOnlyList<(ParsedRow, IReadOnlyList<ValidationError>, string)>>(),
+                It.IsAny<Guid>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0);
 
         _idempotencyMock = new Mock<IUploadIdempotencyGuard>();
         _idempotencyMock
@@ -97,7 +120,9 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
             // Mocked dependencies registered as singletons so Verify() sees all calls.
             .AddSingleton(_resolverMock.Object)
             .AddSingleton(_parserMock.Object)
+            .AddSingleton(_pipelineMock.Object)
             .AddSingleton(_inserterMock.Object)
+            .AddSingleton(_invalidPersisterMock.Object)
             .AddSingleton(_idempotencyMock.Object)
             .AddMassTransitTestHarness(cfg =>
             {
@@ -202,6 +227,19 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Consume_valid_event_invokes_validation_pipeline()
+    {
+        var evt = ValidEvent();
+        await _harness.Bus.Publish(evt);
+        await _harness.Consumed.Any<FileUploadedEvent>();
+
+        _pipelineMock.Verify(
+            p => p.ClassifyAsync(It.IsAny<IAsyncEnumerable<ParsedRow>>(), It.IsAny<CancellationToken>()),
+            Times.Once,
+            "consumer must pass parsed rows through the validation pipeline");
+    }
+
+    [Fact]
     public async Task Consume_valid_event_invokes_batch_inserter()
     {
         var evt = ValidEvent();
@@ -216,7 +254,23 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
                 evt.SourceSystem,
                 It.IsAny<CancellationToken>()),
             Times.Once,
-            "consumer must invoke the batch inserter with the parsed rows");
+            "consumer must invoke the batch inserter with the valid rows");
+    }
+
+    [Fact]
+    public async Task Consume_valid_event_invokes_invalid_row_persister()
+    {
+        var evt = ValidEvent();
+        await _harness.Bus.Publish(evt);
+        await _harness.Consumed.Any<FileUploadedEvent>();
+
+        _invalidPersisterMock.Verify(
+            p => p.PersistAsync(
+                It.IsAny<IReadOnlyList<(ParsedRow, IReadOnlyList<ValidationError>, string)>>(),
+                evt.UploadId,
+                It.IsAny<CancellationToken>()),
+            Times.Once,
+            "consumer must invoke the invalid row persister to store rejected rows");
     }
 
     [Fact]
@@ -481,5 +535,23 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
 
         (await _harness.Published.Any<Fault<FileUploadedEvent>>())
             .Should().BeTrue("a missing file must cause a fault so the message can be retried");
+    }
+
+    // ── Validation pipeline integration ───────────────────────────────────────
+
+    [Fact]
+    public async Task Consume_invokes_invalid_row_persister_with_upload_id()
+    {
+        var evt = ValidEvent();
+        await _harness.Bus.Publish(evt);
+        await _harness.Consumed.Any<FileUploadedEvent>();
+
+        _invalidPersisterMock.Verify(
+            p => p.PersistAsync(
+                It.IsAny<IReadOnlyList<(ParsedRow, IReadOnlyList<ValidationError>, string)>>(),
+                evt.UploadId,
+                It.IsAny<CancellationToken>()),
+            Times.Once,
+            "invalid row persister must receive the event's UploadId for correlation");
     }
 }

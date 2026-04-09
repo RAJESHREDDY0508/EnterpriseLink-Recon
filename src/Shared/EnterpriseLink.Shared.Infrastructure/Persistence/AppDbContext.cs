@@ -54,6 +54,12 @@ public class AppDbContext : DbContext
     /// </summary>
     public DbSet<ProcessedUpload> ProcessedUploads => Set<ProcessedUpload>();
 
+    /// <summary>
+    /// Stores every CSV row rejected by schema validation, business-rule checks,
+    /// or duplicate detection. Scoped per-tenant via the global query filter.
+    /// </summary>
+    public DbSet<InvalidTransaction> InvalidTransactions => Set<InvalidTransaction>();
+
     // ── EF Core pipeline configuration ───────────────────────────────────────
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
@@ -92,6 +98,10 @@ public class AppDbContext : DbContext
 
         // Transactions: tenant isolation + soft delete
         modelBuilder.Entity<Transaction>()
+            .HasQueryFilter(t => t.TenantId == _tenantContext.TenantId && !t.IsDeleted);
+
+        // InvalidTransactions: tenant isolation + soft delete
+        modelBuilder.Entity<InvalidTransaction>()
             .HasQueryFilter(t => t.TenantId == _tenantContext.TenantId && !t.IsDeleted);
     }
 

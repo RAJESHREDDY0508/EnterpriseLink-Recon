@@ -33,6 +33,13 @@ try
     // Acceptance criteria: "Commit every N records" + "Duplicate processing avoided".
     builder.Services.AddWorkerPersistence(builder.Configuration);
 
+    // ── Validation engine ─────────────────────────────────────────────────────
+    // Registers schema validators, business-rule validators, duplicate detector,
+    // IValidationPipeline and IInvalidRowPersister.
+    // Acceptance criteria: "Required fields enforced" + "Rule framework extensible"
+    //   + "Hash-based or key-based detection" + "Invalid records stored separately".
+    builder.Services.AddWorkerValidation();
+
     // ── Storage resolver + CSV streaming parser ───────────────────────────────
     // Registers IFileStorageResolver (resolves relative path → absolute path) and
     // ICsvStreamingParser (CsvHelper-backed, IAsyncEnumerable, O(1) memory).
