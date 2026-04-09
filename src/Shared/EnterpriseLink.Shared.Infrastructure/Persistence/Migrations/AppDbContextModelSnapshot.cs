@@ -22,6 +22,58 @@ namespace EnterpriseLink.Shared.Infrastructure.Persistence.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("EnterpriseLink.Shared.Domain.Entities.ProcessedUpload", b =>
+                {
+                    b.Property<Guid>("UploadId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<bool>("IsDeleted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.Property<int>("RowsInserted")
+                        .HasColumnType("int");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("SourceSystem")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("UploadId");
+
+                    b.HasIndex("TenantId")
+                        .HasDatabaseName("IX_ProcessedUploads_TenantId");
+
+                    b.HasIndex("TenantId", "CreatedAt")
+                        .HasDatabaseName("IX_ProcessedUploads_TenantId_CreatedAt");
+
+                    b.ToTable("ProcessedUploads", (string)null);
+                });
+
             modelBuilder.Entity("EnterpriseLink.Shared.Domain.Entities.Tenant", b =>
                 {
                     b.Property<Guid>("TenantId")
@@ -208,6 +260,17 @@ namespace EnterpriseLink.Shared.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("UX_Users_TenantId_Email");
 
                     b.ToTable("Users", (string)null);
+                });
+
+            modelBuilder.Entity("EnterpriseLink.Shared.Domain.Entities.ProcessedUpload", b =>
+                {
+                    b.HasOne("EnterpriseLink.Shared.Domain.Entities.Tenant", "Tenant")
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Tenant");
                 });
 
             modelBuilder.Entity("EnterpriseLink.Shared.Domain.Entities.Transaction", b =>

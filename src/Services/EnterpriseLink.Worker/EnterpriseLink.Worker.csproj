@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\Shared\EnterpriseLink.Shared.Contracts\EnterpriseLink.Shared.Contracts.csproj" />
+    <ProjectReference Include="..\..\Shared\EnterpriseLink.Shared.Infrastructure\EnterpriseLink.Shared.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

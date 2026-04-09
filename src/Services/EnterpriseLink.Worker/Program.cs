@@ -27,6 +27,12 @@ try
         .WriteTo.Console(outputTemplate:
             "[{Timestamp:HH:mm:ss} {Level:u3}] [{Service}] {Message:lj}{NewLine}{Exception}"));
 
+    // ── Persistence, batch insert & idempotency ───────────────────────────────
+    // Registers AppDbContext (SQL Server), WorkerTenantContext (scoped per message),
+    // IBatchRowInserter (commit every N rows) and IUploadIdempotencyGuard (EF Core).
+    // Acceptance criteria: "Commit every N records" + "Duplicate processing avoided".
+    builder.Services.AddWorkerPersistence(builder.Configuration);
+
     // ── Storage resolver + CSV streaming parser ───────────────────────────────
     // Registers IFileStorageResolver (resolves relative path → absolute path) and
     // ICsvStreamingParser (CsvHelper-backed, IAsyncEnumerable, O(1) memory).

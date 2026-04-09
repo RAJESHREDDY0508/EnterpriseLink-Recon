@@ -48,6 +48,12 @@ public class AppDbContext : DbContext
     public DbSet<User> Users => Set<User>();
     public DbSet<Transaction> Transactions => Set<Transaction>();
 
+    /// <summary>
+    /// Idempotency tracking table.
+    /// One row per <c>FileUploadedEvent.UploadId</c>; used to prevent duplicate processing.
+    /// </summary>
+    public DbSet<ProcessedUpload> ProcessedUploads => Set<ProcessedUpload>();
+
     // ── EF Core pipeline configuration ───────────────────────────────────────
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)

@@ -1,5 +1,8 @@
 using EnterpriseLink.Shared.Contracts.Events;
+using EnterpriseLink.Worker.Batch;
 using EnterpriseLink.Worker.Consumers;
+using EnterpriseLink.Worker.Idempotency;
+using EnterpriseLink.Worker.MultiTenancy;
 using EnterpriseLink.Worker.Parsing;
 using EnterpriseLink.Worker.Storage;
 using FluentAssertions;
@@ -18,14 +21,15 @@ namespace EnterpriseLink.Worker.Tests;
 /// <para>
 /// All tests use <c>ITestHarness</c> so they exercise the full MassTransit
 /// dispatch pipeline (serialisation, routing, retry) without a real broker.
-/// <see cref="IFileStorageResolver"/> and <see cref="ICsvStreamingParser"/> are
-/// mocked so tests remain in-memory with no filesystem or CsvHelper dependency.
+/// All dependencies of the consumer are mocked so tests run fully in-memory.
 /// </para>
 ///
 /// <para>Acceptance criteria covered:</para>
 /// <list type="bullet">
-///   <item><description>Subscribes to queue — consumer is registered and receives messages.</description></item>
-///   <item><description>Handles messages — consumer processes valid events and faults on invalid ones.</description></item>
+///   <item><description>Subscribes to queue.</description></item>
+///   <item><description>Handles messages — valid events succeed, invalid events fault.</description></item>
+///   <item><description>Commit every N records — inserter is invoked and wired to the parser.</description></item>
+///   <item><description>Duplicate processing avoided — idempotency guard controls flow.</description></item>
 /// </list>
 /// </summary>
 public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
@@ -34,9 +38,11 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
     private readonly ServiceProvider _provider;
     private readonly ITestHarness _harness;
 
-    // Exposed so individual tests can configure return values.
+    // Exposed so individual tests can reconfigure return values.
     private readonly Mock<IFileStorageResolver> _resolverMock;
     private readonly Mock<ICsvStreamingParser> _parserMock;
+    private readonly Mock<IBatchRowInserter> _inserterMock;
+    private readonly Mock<IUploadIdempotencyGuard> _idempotencyMock;
 
     public FileUploadedEventConsumerTests()
     {
@@ -44,22 +50,55 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
         loggerMock.Setup(l => l.IsEnabled(It.IsAny<LogLevel>())).Returns(true);
 
         _resolverMock = new Mock<IFileStorageResolver>();
-        // Default: return a harmless path for any input — tests that need different
-        // behaviour override this setup individually.
         _resolverMock
             .Setup(r => r.ResolveFullPath(It.IsAny<string>()))
             .Returns("/tmp/resolved/data.csv");
 
         _parserMock = new Mock<ICsvStreamingParser>();
-        // Default: return an empty async enumerable — no rows, no I/O.
         _parserMock
             .Setup(p => p.ParseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Returns(EmptyAsyncEnumerable());
 
+        // Default: claim succeeds (TryBeginAsync = true), so processing proceeds.
+        _inserterMock = new Mock<IBatchRowInserter>();
+        _inserterMock
+            .Setup(i => i.InsertAsync(
+                It.IsAny<IAsyncEnumerable<ParsedRow>>(),
+                It.IsAny<Guid>(),
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0); // 0 matches ValidEvent().DataRowCount — no mismatch warning
+
+        _idempotencyMock = new Mock<IUploadIdempotencyGuard>();
+        _idempotencyMock
+            .Setup(g => g.TryBeginAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        _idempotencyMock
+            .Setup(g => g.CompleteAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        _idempotencyMock
+            .Setup(g => g.FailAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
         _provider = new ServiceCollection()
             .AddSingleton(loggerMock.Object)
+            // WorkerTenantContext is scoped — each MassTransit message scope gets its own.
+            .AddScoped<WorkerTenantContext>()
+            // Mocked dependencies registered as singletons so Verify() sees all calls.
             .AddSingleton(_resolverMock.Object)
             .AddSingleton(_parserMock.Object)
+            .AddSingleton(_inserterMock.Object)
+            .AddSingleton(_idempotencyMock.Object)
             .AddMassTransitTestHarness(cfg =>
             {
                 cfg.AddConsumer<FileUploadedEventConsumer>();
@@ -79,7 +118,7 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-#pragma warning disable CS1998 // async method with no await — intentional empty iterator
+#pragma warning disable CS1998
     private static async IAsyncEnumerable<ParsedRow> EmptyAsyncEnumerable()
     {
         yield break;
@@ -94,7 +133,7 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
             StoragePath = "tenant-1/upload-abc/data.csv",
             FileName = "data.csv",
             FileSizeBytes = 1024,
-            DataRowCount = 0, // 0 matches empty mock parser — no warning logged
+            DataRowCount = 0, // 0 matches default inserter mock return — no mismatch warning
             SourceSystem = "SalesForce",
             UploadedAt = DateTimeOffset.UtcNow,
         };
@@ -104,8 +143,7 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
     [Fact]
     public async Task Consumer_is_registered_and_receives_published_event()
     {
-        var evt = ValidEvent();
-        await _harness.Bus.Publish(evt);
+        await _harness.Bus.Publish(ValidEvent());
 
         (await _harness.Consumed.Any<FileUploadedEvent>())
             .Should().BeTrue("the consumer must subscribe to FileUploadedEvent");
@@ -119,8 +157,7 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
         await _harness.Consumed.Any<FileUploadedEvent>();
 
         var consumerHarness = _harness.GetConsumerHarness<FileUploadedEventConsumer>();
-        (await consumerHarness.Consumed.Any<FileUploadedEvent>())
-            .Should().BeTrue();
+        (await consumerHarness.Consumed.Any<FileUploadedEvent>()).Should().BeTrue();
 
         var consumed = consumerHarness.Consumed.Select<FileUploadedEvent>().First();
         consumed.Context.Message.UploadId.Should().Be(evt.UploadId);
@@ -165,6 +202,24 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Consume_valid_event_invokes_batch_inserter()
+    {
+        var evt = ValidEvent();
+        await _harness.Bus.Publish(evt);
+        await _harness.Consumed.Any<FileUploadedEvent>();
+
+        _inserterMock.Verify(
+            i => i.InsertAsync(
+                It.IsAny<IAsyncEnumerable<ParsedRow>>(),
+                evt.TenantId,
+                evt.UploadId,
+                evt.SourceSystem,
+                It.IsAny<CancellationToken>()),
+            Times.Once,
+            "consumer must invoke the batch inserter with the parsed rows");
+    }
+
+    [Fact]
     public async Task Consume_valid_event_succeeds_for_multiple_tenants()
     {
         var events = Enumerable.Range(0, 3).Select(_ => ValidEvent()).ToList();
@@ -175,8 +230,7 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
         await Task.Delay(500);
 
         var consumerHarness = _harness.GetConsumerHarness<FileUploadedEventConsumer>();
-        consumerHarness.Consumed.Select<FileUploadedEvent>().Should().HaveCount(3,
-            "all three events must be handled");
+        consumerHarness.Consumed.Select<FileUploadedEvent>().Should().HaveCount(3);
     }
 
     [Fact]
@@ -198,13 +252,87 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
         msg.SourceSystem.Should().Be(evt.SourceSystem);
     }
 
+    // ── Idempotency ───────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Consume_invokes_idempotency_guard_before_processing()
+    {
+        var evt = ValidEvent();
+        await _harness.Bus.Publish(evt);
+        await _harness.Consumed.Any<FileUploadedEvent>();
+
+        _idempotencyMock.Verify(
+            g => g.TryBeginAsync(
+                evt.UploadId,
+                evt.TenantId,
+                evt.SourceSystem,
+                It.IsAny<CancellationToken>()),
+            Times.Once,
+            "consumer must call TryBeginAsync before resolving the file path");
+    }
+
+    [Fact]
+    public async Task Consume_marks_complete_after_successful_insert()
+    {
+        _inserterMock
+            .Setup(i => i.InsertAsync(
+                It.IsAny<IAsyncEnumerable<ParsedRow>>(),
+                It.IsAny<Guid>(),
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(42);
+
+        var evt = ValidEvent() with { DataRowCount = 42 };
+        await _harness.Bus.Publish(evt);
+        await _harness.Consumed.Any<FileUploadedEvent>();
+
+        _idempotencyMock.Verify(
+            g => g.CompleteAsync(evt.UploadId, 42, It.IsAny<CancellationToken>()),
+            Times.Once,
+            "consumer must mark the upload complete with the final row count");
+    }
+
+    [Fact]
+    public async Task Consume_skips_processing_when_already_completed()
+    {
+        // Guard returns false → upload already done; consumer must ack and skip.
+        _idempotencyMock
+            .Setup(g => g.TryBeginAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        await _harness.Bus.Publish(ValidEvent());
+        await _harness.Consumed.Any<FileUploadedEvent>();
+
+        (await _harness.Published.Any<Fault<FileUploadedEvent>>())
+            .Should().BeFalse("a duplicate message must be silently acknowledged, not faulted");
+
+        _resolverMock.Verify(
+            r => r.ResolveFullPath(It.IsAny<string>()),
+            Times.Never,
+            "storage resolver must not be invoked for already-completed uploads");
+
+        _inserterMock.Verify(
+            i => i.InsertAsync(
+                It.IsAny<IAsyncEnumerable<ParsedRow>>(),
+                It.IsAny<Guid>(),
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never,
+            "batch inserter must not be invoked for already-completed uploads");
+    }
+
     // ── Handles messages — validation guards ──────────────────────────────────
 
     [Fact]
     public async Task Consume_event_with_empty_UploadId_faults()
     {
-        var evt = ValidEvent(uploadId: Guid.Empty);
-        await _harness.Bus.Publish(evt);
+        await _harness.Bus.Publish(ValidEvent(uploadId: Guid.Empty));
         await Task.Delay(500);
 
         (await _harness.Published.Any<Fault<FileUploadedEvent>>())
@@ -214,8 +342,7 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
     [Fact]
     public async Task Consume_event_with_empty_TenantId_faults()
     {
-        var evt = ValidEvent(tenantId: Guid.Empty);
-        await _harness.Bus.Publish(evt);
+        await _harness.Bus.Publish(ValidEvent(tenantId: Guid.Empty));
         await Task.Delay(500);
 
         (await _harness.Published.Any<Fault<FileUploadedEvent>>())
@@ -225,8 +352,7 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
     [Fact]
     public async Task Consume_event_with_blank_StoragePath_faults()
     {
-        var evt = ValidEvent() with { StoragePath = "   " };
-        await _harness.Bus.Publish(evt);
+        await _harness.Bus.Publish(ValidEvent() with { StoragePath = "   " });
         await Task.Delay(500);
 
         (await _harness.Published.Any<Fault<FileUploadedEvent>>())
@@ -236,8 +362,7 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
     [Fact]
     public async Task Consume_event_with_blank_FileName_faults()
     {
-        var evt = ValidEvent() with { FileName = "" };
-        await _harness.Bus.Publish(evt);
+        await _harness.Bus.Publish(ValidEvent() with { FileName = "" });
         await Task.Delay(500);
 
         (await _harness.Published.Any<Fault<FileUploadedEvent>>())
@@ -249,8 +374,7 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
     [Fact]
     public async Task Faulted_message_is_published_to_fault_topic()
     {
-        var malformed = ValidEvent(uploadId: Guid.Empty);
-        await _harness.Bus.Publish(malformed);
+        await _harness.Bus.Publish(ValidEvent(uploadId: Guid.Empty));
         await Task.Delay(500);
 
         _harness.Published.Select<Fault<FileUploadedEvent>>()
@@ -262,8 +386,7 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
     [Fact]
     public async Task Consume_event_with_future_UploadedAt_beyond_grace_faults()
     {
-        var evt = ValidEvent() with { UploadedAt = DateTimeOffset.UtcNow.AddMinutes(10) };
-        await _harness.Bus.Publish(evt);
+        await _harness.Bus.Publish(ValidEvent() with { UploadedAt = DateTimeOffset.UtcNow.AddMinutes(10) });
         await Task.Delay(500);
 
         (await _harness.Published.Any<Fault<FileUploadedEvent>>())
@@ -273,8 +396,7 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
     [Fact]
     public async Task Consume_event_with_UploadedAt_within_grace_window_succeeds()
     {
-        var evt = ValidEvent() with { UploadedAt = DateTimeOffset.UtcNow.AddMinutes(2) };
-        await _harness.Bus.Publish(evt);
+        await _harness.Bus.Publish(ValidEvent() with { UploadedAt = DateTimeOffset.UtcNow.AddMinutes(2) });
         await _harness.Consumed.Any<FileUploadedEvent>();
 
         (await _harness.Published.Any<Fault<FileUploadedEvent>>())
@@ -284,53 +406,55 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
     [Fact]
     public async Task Consume_event_with_past_UploadedAt_succeeds()
     {
-        var evt = ValidEvent() with { UploadedAt = DateTimeOffset.UtcNow.AddHours(-1) };
-        await _harness.Bus.Publish(evt);
+        await _harness.Bus.Publish(ValidEvent() with { UploadedAt = DateTimeOffset.UtcNow.AddHours(-1) });
         await _harness.Consumed.Any<FileUploadedEvent>();
 
         (await _harness.Published.Any<Fault<FileUploadedEvent>>())
             .Should().BeFalse("a past UploadedAt timestamp is the normal case and must not fault");
     }
 
-    // ── CSV streaming integration ─────────────────────────────────────────────
+    // ── Error handling — FailAsync is called before re-throw ──────────────────
 
-    /// <summary>
-    /// Consumer iterates all rows returned by the parser — verifies the
-    /// <c>await foreach</c> loop in the consumer is wired correctly.
-    /// </summary>
     [Fact]
-    public async Task Consume_iterates_all_rows_from_csv_parser()
+    public async Task Consume_marks_failed_when_storage_resolver_throws()
     {
-        // Arrange — parser returns 3 rows.
-        static async IAsyncEnumerable<ParsedRow> ThreeRows()
-        {
-            for (var i = 1; i <= 3; i++)
-            {
-                await Task.Yield();
-                yield return new ParsedRow(i,
-                    new Dictionary<string, string> { ["Id"] = i.ToString() }.AsReadOnly());
-            }
-        }
+        var evt = ValidEvent();
+        _resolverMock
+            .Setup(r => r.ResolveFullPath(It.IsAny<string>()))
+            .Throws(new ArgumentException("Path traversal blocked"));
 
-        _parserMock
-            .Setup(p => p.ParseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Returns(ThreeRows());
-
-        var evt = ValidEvent() with { DataRowCount = 3 };
-
-        // Act
         await _harness.Bus.Publish(evt);
-        await _harness.Consumed.Any<FileUploadedEvent>();
+        await Task.Delay(500);
 
-        // Assert — no fault: all 3 rows consumed successfully.
         (await _harness.Published.Any<Fault<FileUploadedEvent>>())
-            .Should().BeFalse("consuming 3 rows from the parser must not cause a fault");
+            .Should().BeTrue("a resolver exception must propagate as a fault");
+
+        _idempotencyMock.Verify(
+            g => g.FailAsync(evt.UploadId, It.IsAny<CancellationToken>()),
+            Times.Once,
+            "FailAsync must be called before re-throwing so the next retry can distinguish failure");
     }
 
-    /// <summary>
-    /// If the storage resolver throws (e.g. path traversal blocked), the consumer
-    /// faults and lets MassTransit retry / dead-letter the message.
-    /// </summary>
+    [Fact]
+    public async Task Consume_marks_failed_when_csv_file_not_found()
+    {
+        var evt = ValidEvent();
+        _parserMock
+            .Setup(p => p.ParseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Throws(new FileNotFoundException("File was deleted between ingestion and processing"));
+
+        await _harness.Bus.Publish(evt);
+        await Task.Delay(500);
+
+        (await _harness.Published.Any<Fault<FileUploadedEvent>>())
+            .Should().BeTrue("a missing file must fault so MassTransit can retry / dead-letter");
+
+        _idempotencyMock.Verify(
+            g => g.FailAsync(evt.UploadId, It.IsAny<CancellationToken>()),
+            Times.Once,
+            "FailAsync must be called so the Failed record allows retry on next delivery");
+    }
+
     [Fact]
     public async Task Consume_faults_when_storage_resolver_throws()
     {
@@ -345,25 +469,12 @@ public sealed class FileUploadedEventConsumerTests : IAsyncLifetime
             .Should().BeTrue("a resolver exception must propagate as a fault");
     }
 
-    /// <summary>
-    /// If the CSV parser throws <see cref="FileNotFoundException"/>, the consumer
-    /// faults — the file was deleted between ingestion and processing.
-    /// </summary>
     [Fact]
     public async Task Consume_faults_when_csv_file_not_found()
     {
-        static async IAsyncEnumerable<ParsedRow> ThrowFileNotFound()
-        {
-            await Task.Yield();
-            throw new FileNotFoundException("File was deleted");
-#pragma warning disable CS0162 // Unreachable code — required to mark method as async iterator
-            yield break;
-#pragma warning restore CS0162
-        }
-
         _parserMock
             .Setup(p => p.ParseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Returns(ThrowFileNotFound());
+            .Throws(new FileNotFoundException("File was deleted"));
 
         await _harness.Bus.Publish(ValidEvent());
         await Task.Delay(500);
