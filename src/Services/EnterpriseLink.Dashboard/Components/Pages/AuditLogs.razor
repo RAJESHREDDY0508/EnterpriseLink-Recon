@@ -16,14 +16,15 @@
 @* ── Filters ── *@
 <div class="row g-2 mb-3 align-items-end">
     <div class="col-auto">
-        <label class="form-label small mb-1">Entity Type</label>
-        <input class="form-control form-control-sm" style="width:160px"
+        <label class="form-label small mb-1" for="entity-type-filter">Entity Type</label>
+        <input id="entity-type-filter" name="entity-type-filter"
+               class="form-control form-control-sm" style="width:160px"
                placeholder="e.g. Transaction"
                @bind="_entityTypeFilter" @bind:event="oninput"
                @onchange="OnFilterChanged" />
     </div>
     <div class="col-auto">
-        <label class="form-label small mb-1">Action</label>
+        <span class="form-label small mb-1 d-block">Action</span>
         <div class="d-flex gap-1">
             @foreach (var a in new[] { (string?)null, "Added", "Modified" })
             {
