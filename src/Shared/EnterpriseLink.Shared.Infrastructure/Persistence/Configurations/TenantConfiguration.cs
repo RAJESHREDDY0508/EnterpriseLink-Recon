@@ -14,8 +14,13 @@ public sealed class TenantConfiguration : IEntityTypeConfiguration<Tenant>
 {
     public void Configure(EntityTypeBuilder<Tenant> builder)
     {
-        // ── Table ──────────────────────────────────────────────────────────────
-        builder.ToTable("Tenants");
+        // ── Table + temporal history (Story 1) ────────────────────────────────
+        builder.ToTable("Tenants", t => t.IsTemporal(tb =>
+        {
+            tb.UseHistoryTable("TenantsHistory");
+            tb.HasPeriodStart("SysStartTime").HasColumnName("SysStartTime");
+            tb.HasPeriodEnd("SysEndTime").HasColumnName("SysEndTime");
+        }));
 
         // ── Primary key ────────────────────────────────────────────────────────
         builder.HasKey(t => t.TenantId);

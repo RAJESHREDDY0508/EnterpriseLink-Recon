@@ -22,6 +22,54 @@ namespace EnterpriseLink.Shared.Infrastructure.Persistence.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("EnterpriseLink.Shared.Domain.Entities.AuditLog", b =>
+                {
+                    b.Property<Guid>("AuditLogId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValueSql("NEWSEQUENTIALID()");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("EntityId")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("EntityType")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("NewValues")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("OldValues")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid?>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("AuditLogId");
+
+                    b.HasIndex("EntityType", "EntityId")
+                        .HasDatabaseName("IX_AuditLogs_EntityType_EntityId");
+
+                    b.HasIndex("TenantId")
+                        .HasDatabaseName("IX_AuditLogs_TenantId");
+
+                    b.HasIndex("OccurredAt")
+                        .HasDatabaseName("IX_AuditLogs_OccurredAt");
+
+                    b.ToTable("AuditLogs", (string)null);
+                });
+
             modelBuilder.Entity("EnterpriseLink.Shared.Domain.Entities.InvalidTransaction", b =>
                 {
                     b.Property<Guid>("InvalidTransactionId")
@@ -234,6 +282,13 @@ namespace EnterpriseLink.Shared.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<Guid?>("UploadId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("SourceSystem")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
                     b.Property<Guid?>("UserId")
                         .HasColumnType("uniqueidentifier");
 
@@ -259,6 +314,10 @@ namespace EnterpriseLink.Shared.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("TenantId", "Status")
                         .HasDatabaseName("IX_Transactions_TenantId_Status");
+
+                    b.HasIndex("TenantId", "UploadId")
+                        .HasDatabaseName("IX_Transactions_TenantId_UploadId")
+                        .HasFilter("[UploadId] IS NOT NULL");
 
                     b.ToTable("Transactions", (string)null);
                 });

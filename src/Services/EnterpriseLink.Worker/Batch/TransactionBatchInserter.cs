@@ -75,7 +75,7 @@ public sealed class TransactionBatchInserter : IBatchRowInserter
 
         await foreach (var row in rows.WithCancellation(cancellationToken))
         {
-            batch.Add(MapRowToTransaction(row));
+            batch.Add(MapRowToTransaction(row, uploadId, sourceSystem));
 
             if (batch.Count >= _batchSize)
             {
@@ -137,8 +137,11 @@ public sealed class TransactionBatchInserter : IBatchRowInserter
     /// Maps a <see cref="ParsedRow"/> to a new <see cref="Transaction"/>.
     /// <c>TenantId</c> is intentionally omitted — it is auto-injected by
     /// <c>AppDbContext.ApplyTenantId</c> from the scoped <c>WorkerTenantContext</c>.
+    /// <c>UploadId</c> and <c>SourceSystem</c> carry data-lineage provenance
+    /// (Story 3) so every transaction can be traced back to its originating file.
     /// </summary>
-    private static Transaction MapRowToTransaction(ParsedRow row)
+    private static Transaction MapRowToTransaction(
+        ParsedRow row, Guid uploadId, string sourceSystem)
     {
         var amount = ParseDecimal(row.Fields, "Amount", "Value", "TotalAmount");
         var externalRef = GetFirstNonEmpty(row.Fields, "Id", "ExternalReferenceId", "ReferenceId", "TransactionId");
@@ -150,6 +153,8 @@ public sealed class TransactionBatchInserter : IBatchRowInserter
             Status = TransactionStatus.Pending,
             ExternalReferenceId = externalRef,
             Description = description,
+            UploadId = uploadId,
+            SourceSystem = sourceSystem,
         };
     }
 

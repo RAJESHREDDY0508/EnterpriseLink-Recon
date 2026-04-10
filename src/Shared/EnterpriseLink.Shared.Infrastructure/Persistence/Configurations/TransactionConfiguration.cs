@@ -15,8 +15,17 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
 {
     public void Configure(EntityTypeBuilder<Transaction> builder)
     {
-        // ── Table ──────────────────────────────────────────────────────────────
-        builder.ToTable("Transactions");
+        // ── Table + temporal history (Story 1) ────────────────────────────────
+        // SQL Server system-versioned temporal table. Every row change (insert,
+        // update, soft-delete) is automatically mirrored to TransactionsHistory
+        // with SysStartTime / SysEndTime period columns, giving a full row-level
+        // change history queryable via EF Core temporal LINQ operators.
+        builder.ToTable("Transactions", t => t.IsTemporal(tb =>
+        {
+            tb.UseHistoryTable("TransactionsHistory");
+            tb.HasPeriodStart("SysStartTime").HasColumnName("SysStartTime");
+            tb.HasPeriodEnd("SysEndTime").HasColumnName("SysEndTime");
+        }));
 
         // ── Primary key ────────────────────────────────────────────────────────
         builder.HasKey(t => t.TransactionId);
@@ -49,6 +58,14 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
         builder.Property(t => t.Description)
             .IsRequired(false)
             .HasMaxLength(500);
+
+        // ── Data lineage (Story 3) ─────────────────────────────────────────────
+        builder.Property(t => t.UploadId)
+            .IsRequired(false);
+
+        builder.Property(t => t.SourceSystem)
+            .IsRequired(false)
+            .HasMaxLength(200);
 
         // ── Audit fields ───────────────────────────────────────────────────────
         builder.Property(t => t.CreatedAt)
@@ -94,5 +111,10 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
         builder.HasIndex(t => new { t.TenantId, t.ExternalReferenceId })
             .HasDatabaseName("IX_Transactions_TenantId_ExternalRef")
             .HasFilter("[ExternalReferenceId] IS NOT NULL");  // Filtered index — only index non-null rows
+
+        // Lineage index — "all transactions from upload X for tenant Y" (Story 3)
+        builder.HasIndex(t => new { t.TenantId, t.UploadId })
+            .HasDatabaseName("IX_Transactions_TenantId_UploadId")
+            .HasFilter("[UploadId] IS NOT NULL");
     }
 }

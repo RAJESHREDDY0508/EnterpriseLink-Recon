@@ -47,6 +47,23 @@ public class Transaction : AuditableEntity, ITenantScoped
     /// </summary>
     public string? Description { get; set; }
 
+    // ── Data lineage (Story 3) ────────────────────────────────────────────────
+
+    /// <summary>
+    /// The <c>FileUploadedEvent.UploadId</c> that produced this transaction.
+    /// Null for transactions created outside the CSV batch-import pipeline.
+    /// Join to <c>ProcessedUploads</c> to trace the full source → transformation chain.
+    /// </summary>
+    public Guid? UploadId { get; set; }
+
+    /// <summary>
+    /// The source system that submitted the file (e.g. <c>"SalesForce"</c>, <c>"SAP"</c>).
+    /// Null for transactions created outside the CSV batch-import pipeline.
+    /// Together with <c>ExternalReferenceId</c> this provides a complete data-lineage
+    /// fingerprint: where the data came from and what its identity was in the source.
+    /// </summary>
+    public string? SourceSystem { get; set; }
+
     // ── Navigation properties ─────────────────────────────────────────────────
 
     /// <summary>The tenant this transaction belongs to.</summary>

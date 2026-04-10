@@ -14,8 +14,13 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
 {
     public void Configure(EntityTypeBuilder<User> builder)
     {
-        // ── Table ──────────────────────────────────────────────────────────────
-        builder.ToTable("Users");
+        // ── Table + temporal history (Story 1) ────────────────────────────────
+        builder.ToTable("Users", t => t.IsTemporal(tb =>
+        {
+            tb.UseHistoryTable("UsersHistory");
+            tb.HasPeriodStart("SysStartTime").HasColumnName("SysStartTime");
+            tb.HasPeriodEnd("SysEndTime").HasColumnName("SysEndTime");
+        }));
 
         // ── Primary key ────────────────────────────────────────────────────────
         builder.HasKey(u => u.UserId);

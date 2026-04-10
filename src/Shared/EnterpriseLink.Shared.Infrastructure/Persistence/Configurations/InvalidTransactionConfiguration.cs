@@ -31,6 +31,14 @@ internal sealed class InvalidTransactionConfiguration
     /// <inheritdoc />
     public void Configure(EntityTypeBuilder<InvalidTransaction> builder)
     {
+        // ── Table + temporal history (Story 1) ────────────────────────────────
+        builder.ToTable("InvalidTransactions", t => t.IsTemporal(tb =>
+        {
+            tb.UseHistoryTable("InvalidTransactionsHistory");
+            tb.HasPeriodStart("SysStartTime").HasColumnName("SysStartTime");
+            tb.HasPeriodEnd("SysEndTime").HasColumnName("SysEndTime");
+        }));
+
         // ── Primary key ────────────────────────────────────────────────────────
         // Database-generated sequential GUID avoids page splits on high-volume inserts.
         builder.HasKey(t => t.InvalidTransactionId);

@@ -70,6 +70,14 @@ internal sealed class ProcessedUploadConfiguration : IEntityTypeConfiguration<Pr
             .HasForeignKey(p => p.TenantId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        // ── Temporal history (Story 1) ─────────────────────────────────────────
+        builder.ToTable("ProcessedUploads", t => t.IsTemporal(tb =>
+        {
+            tb.UseHistoryTable("ProcessedUploadsHistory");
+            tb.HasPeriodStart("SysStartTime").HasColumnName("SysStartTime");
+            tb.HasPeriodEnd("SysEndTime").HasColumnName("SysEndTime");
+        }));
+
         // ── Soft-delete filter ─────────────────────────────────────────────────
         // This filter is intentionally bypassed by the idempotency guard via
         // IgnoreQueryFilters() so that soft-deleted records are detected too

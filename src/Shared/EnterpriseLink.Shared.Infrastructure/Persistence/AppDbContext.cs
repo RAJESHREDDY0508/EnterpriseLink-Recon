@@ -1,7 +1,9 @@
+using System.Text.Json;
 using EnterpriseLink.Shared.Domain.Entities;
 using EnterpriseLink.Shared.Domain.MultiTenancy;
 using EnterpriseLink.Shared.Infrastructure.MultiTenancy;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 
 namespace EnterpriseLink.Shared.Infrastructure.Persistence;
 
@@ -60,6 +62,12 @@ public class AppDbContext : DbContext
     /// </summary>
     public DbSet<InvalidTransaction> InvalidTransactions => Set<InvalidTransaction>();
 
+    /// <summary>
+    /// Append-only audit trail. One row per entity change (insert / update / soft-delete),
+    /// written atomically in the same transaction as the change itself.
+    /// </summary>
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+
     // ── EF Core pipeline configuration ───────────────────────────────────────
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
@@ -103,6 +111,14 @@ public class AppDbContext : DbContext
         // InvalidTransactions: tenant isolation + soft delete
         modelBuilder.Entity<InvalidTransaction>()
             .HasQueryFilter(t => t.TenantId == _tenantContext.TenantId && !t.IsDeleted);
+
+        // AuditLogs: tenant-scoped reads (cross-tenant admin queries use IgnoreQueryFilters).
+        // TenantId is nullable on AuditLog — rows for non-tenant-scoped entities (e.g. Tenant
+        // itself) have TenantId = null and are only visible to admin queries.
+        modelBuilder.Entity<AuditLog>()
+            .HasQueryFilter(a => !_tenantContext.HasTenant ||
+                                 a.TenantId == null ||
+                                 a.TenantId == _tenantContext.TenantId);
     }
 
     // ── Save interception ─────────────────────────────────────────────────────
@@ -112,6 +128,12 @@ public class AppDbContext : DbContext
         ApplyAuditFields();
         ApplyTenantId();
         InterceptSoftDeletes();
+
+        // Capture before/after state AFTER soft-delete conversion so the audit
+        // log reflects the exact rows that will be written to the database.
+        var auditEntries = BuildAuditEntries();
+        Set<AuditLog>().AddRange(auditEntries);
+
         return base.SaveChangesAsync(cancellationToken);
     }
 
@@ -120,6 +142,10 @@ public class AppDbContext : DbContext
         ApplyAuditFields();
         ApplyTenantId();
         InterceptSoftDeletes();
+
+        var auditEntries = BuildAuditEntries();
+        Set<AuditLog>().AddRange(auditEntries);
+
         return base.SaveChanges();
     }
 
@@ -165,6 +191,64 @@ public class AppDbContext : DbContext
         {
             entry.Entity.TenantId = _tenantContext.TenantId;
         }
+    }
+
+    /// <summary>
+    /// Captures before/after state for every <see cref="AuditableEntity"/> change
+    /// currently tracked by the change tracker. Called after
+    /// <see cref="InterceptSoftDeletes"/> so that soft-delete conversions
+    /// (Deleted → Modified+IsDeleted=true) are reflected in the audit entries.
+    /// </summary>
+    private IEnumerable<AuditLog> BuildAuditEntries()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var tenantId = _tenantContext.HasTenant ? _tenantContext.TenantId : (Guid?)null;
+
+        var entries = ChangeTracker
+            .Entries<AuditableEntity>()
+            .Where(e => e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+            .ToList();   // Materialise before adding new AuditLog entries to the tracker
+
+        foreach (var entry in entries)
+        {
+            string? oldValues = null;
+            string? newValues = null;
+
+            if (entry.State is EntityState.Modified or EntityState.Deleted)
+                oldValues = SerialiseValues(entry.OriginalValues);
+
+            if (entry.State is EntityState.Added or EntityState.Modified)
+                newValues = SerialiseValues(entry.CurrentValues);
+
+            yield return new AuditLog
+            {
+                EntityType = entry.Entity.GetType().Name,
+                EntityId = BuildEntityId(entry),
+                TenantId = tenantId,
+                Action = entry.State.ToString(),
+                OldValues = oldValues,
+                NewValues = newValues,
+                OccurredAt = now,
+            };
+        }
+    }
+
+    private static string BuildEntityId(EntityEntry entry)
+    {
+        var key = entry.Metadata.FindPrimaryKey();
+        if (key is null) return string.Empty;
+
+        return string.Join(",", key.Properties
+            .Select(p => entry.Property(p.Name).CurrentValue?.ToString() ?? "null"));
+    }
+
+    private static string SerialiseValues(PropertyValues values)
+    {
+        var dict = values.Properties
+            .Where(p => !p.IsShadowProperty())   // Exclude SysStartTime/SysEndTime etc.
+            .ToDictionary(p => p.Name, p => values[p]?.ToString());
+
+        return JsonSerializer.Serialize(dict);
     }
 
     /// <summary>
