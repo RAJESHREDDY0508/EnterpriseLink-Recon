@@ -1,6 +1,7 @@
 @page "/audit-logs"
 @rendermode InteractiveServer
 @inject IAuditLogService AuditLogSvc
+@inject ILogger<AuditLogs> Logger
 @implements IAsyncDisposable
 
 <PageTitle>Audit Logs — EnterpriseLink Dashboard</PageTitle>
@@ -35,7 +36,14 @@
     </div>
 </div>
 
-@if (_logs == null)
+@if (_errorMessage != null)
+{
+    <div class="alert alert-danger d-flex align-items-center gap-2">
+        <strong>Error:</strong> @_errorMessage
+        <button class="btn btn-sm btn-outline-danger ms-auto" @onclick="RetryAsync">Retry</button>
+    </div>
+}
+else if (_logs == null)
 {
     <div class="text-center py-5">
         <div class="spinner-border text-dark" role="status">
@@ -105,6 +113,7 @@ else
     private PagedResult<AuditLogDto>? _logs;
     private string? _entityTypeFilter;
     private string? _actionFilter;
+    private string? _errorMessage;
     private int _page = 1;
     private DateTime _lastRefreshed = DateTime.UtcNow;
     private PeriodicTimer? _timer;
@@ -131,18 +140,32 @@ else
             }
         }
         catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected error in AuditLogs refresh loop.");
+        }
     }
 
     private async Task LoadDataAsync()
     {
-        _logs = await AuditLogSvc.GetAuditLogsAsync(new AuditLogQuery
+        try
         {
-            Page = _page,
-            PageSize = 20,
-            EntityType = string.IsNullOrWhiteSpace(_entityTypeFilter) ? null : _entityTypeFilter.Trim(),
-            Action = _actionFilter,
-        });
-        _lastRefreshed = DateTime.UtcNow;
+            _errorMessage = null;
+            _logs = await AuditLogSvc.GetAuditLogsAsync(new AuditLogQuery
+            {
+                Page = _page,
+                PageSize = 20,
+                EntityType = string.IsNullOrWhiteSpace(_entityTypeFilter) ? null : _entityTypeFilter.Trim(),
+                Action = _actionFilter,
+            }, _cts.Token);
+            _lastRefreshed = DateTime.UtcNow;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load audit log data.");
+            _errorMessage = "Could not load audit log data. Please try again.";
+        }
     }
 
     private async Task OnFilterChanged()
@@ -166,6 +189,12 @@ else
     private async Task NextPage()
     {
         _page++;
+        await LoadDataAsync();
+    }
+
+    private async Task RetryAsync()
+    {
+        _logs = null;
         await LoadDataAsync();
     }
 

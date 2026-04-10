@@ -1,6 +1,7 @@
 @page "/errors"
 @rendermode InteractiveServer
 @inject IErrorViewerService ErrorViewerSvc
+@inject ILogger<ErrorViewer> Logger
 @implements IAsyncDisposable
 
 <PageTitle>Error Viewer — EnterpriseLink Dashboard</PageTitle>
@@ -28,7 +29,14 @@
     </div>
 </div>
 
-@if (_errors == null)
+@if (_errorMessage != null)
+{
+    <div class="alert alert-danger d-flex align-items-center gap-2">
+        <strong>Error:</strong> @_errorMessage
+        <button class="btn btn-sm btn-outline-danger ms-auto" @onclick="RetryAsync">Retry</button>
+    </div>
+}
+else if (_errors == null)
 {
     <div class="text-center py-5">
         <div class="spinner-border text-warning" role="status">
@@ -89,6 +97,7 @@ else
 @code {
     private PagedResult<InvalidTransactionDto>? _errors;
     private string? _reasonFilter;
+    private string? _errorMessage;
     private int _page = 1;
     private DateTime _lastRefreshed = DateTime.UtcNow;
     private PeriodicTimer? _timer;
@@ -115,17 +124,31 @@ else
             }
         }
         catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected error in ErrorViewer refresh loop.");
+        }
     }
 
     private async Task LoadDataAsync()
     {
-        _errors = await ErrorViewerSvc.GetErrorsAsync(new ErrorViewerQuery
+        try
         {
-            Page = _page,
-            PageSize = 20,
-            FailureReason = _reasonFilter,
-        });
-        _lastRefreshed = DateTime.UtcNow;
+            _errorMessage = null;
+            _errors = await ErrorViewerSvc.GetErrorsAsync(new ErrorViewerQuery
+            {
+                Page = _page,
+                PageSize = 20,
+                FailureReason = _reasonFilter,
+            }, _cts.Token);
+            _lastRefreshed = DateTime.UtcNow;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load error viewer data.");
+            _errorMessage = "Could not load error data. Please try again.";
+        }
     }
 
     private async Task SetReasonFilter(string? reason)
@@ -143,6 +166,12 @@ else
     private async Task NextPage()
     {
         _page++;
+        await LoadDataAsync();
+    }
+
+    private async Task RetryAsync()
+    {
+        _errors = null;
         await LoadDataAsync();
     }
 

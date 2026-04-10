@@ -1,6 +1,7 @@
 @page "/"
 @rendermode InteractiveServer
 @inject IBatchMonitorService BatchMonitorSvc
+@inject ILogger<BatchMonitor> Logger
 @implements IAsyncDisposable
 
 <PageTitle>Batch Monitor — EnterpriseLink Dashboard</PageTitle>
@@ -23,7 +24,14 @@
     }
 </div>
 
-@if (_uploads == null)
+@if (_errorMessage != null)
+{
+    <div class="alert alert-danger d-flex align-items-center gap-2">
+        <strong>Error:</strong> @_errorMessage
+        <button class="btn btn-sm btn-outline-danger ms-auto" @onclick="RetryAsync">Retry</button>
+    </div>
+}
+else if (_uploads == null)
 {
     <div class="text-center py-5">
         <div class="spinner-border text-primary" role="status">
@@ -81,6 +89,7 @@ else
 @code {
     private PagedResult<ProcessedUploadSummaryDto>? _uploads;
     private string? _statusFilter;
+    private string? _errorMessage;
     private int _page = 1;
     private DateTime _lastRefreshed = DateTime.UtcNow;
     private PeriodicTimer? _timer;
@@ -107,17 +116,31 @@ else
             }
         }
         catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected error in BatchMonitor refresh loop.");
+        }
     }
 
     private async Task LoadDataAsync()
     {
-        _uploads = await BatchMonitorSvc.GetUploadsAsync(new BatchMonitorQuery
+        try
         {
-            Page = _page,
-            PageSize = 20,
-            Status = _statusFilter,
-        });
-        _lastRefreshed = DateTime.UtcNow;
+            _errorMessage = null;
+            _uploads = await BatchMonitorSvc.GetUploadsAsync(new BatchMonitorQuery
+            {
+                Page = _page,
+                PageSize = 20,
+                Status = _statusFilter,
+            }, _cts.Token);
+            _lastRefreshed = DateTime.UtcNow;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load batch monitor data.");
+            _errorMessage = "Could not load upload data. Please try again.";
+        }
     }
 
     private async Task SetStatusFilter(string? status)
@@ -135,6 +158,12 @@ else
     private async Task NextPage()
     {
         _page++;
+        await LoadDataAsync();
+    }
+
+    private async Task RetryAsync()
+    {
+        _uploads = null;
         await LoadDataAsync();
     }
 
