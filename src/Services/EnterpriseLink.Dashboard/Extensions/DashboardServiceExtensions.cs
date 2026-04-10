@@ -36,9 +36,14 @@ public static class DashboardServiceExtensions
         services.AddScoped<ITenantContext, DashboardTenantContext>();
 
         // ── EF Core ───────────────────────────────────────────────────────────
+        var connectionString = configuration.GetConnectionString("DefaultConnection")
+            ?? throw new InvalidOperationException(
+                "ConnectionStrings:DefaultConnection is not configured. " +
+                "Add it to appsettings.json or the environment.");
+
         services.AddDbContext<AppDbContext>(options =>
             options.UseSqlServer(
-                configuration.GetConnectionString("DefaultConnection"),
+                connectionString,
                 sqlOptions => sqlOptions.EnableRetryOnFailure(
                     maxRetryCount: 3,
                     maxRetryDelay: TimeSpan.FromSeconds(5),
