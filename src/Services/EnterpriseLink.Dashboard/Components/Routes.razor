@@ -1,0 +1,16 @@
+<Router AppAssembly="typeof(App).Assembly">
+    <Found Context="routeData">
+        <RouteView RouteData="routeData" DefaultLayout="typeof(MainLayout)" />
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+    <NotFound>
+        <PageTitle>Not found</PageTitle>
+        <LayoutView Layout="typeof(MainLayout)">
+            <div class="container mt-4">
+                <h2 class="text-danger">Page Not Found</h2>
+                <p>The requested dashboard page does not exist.</p>
+                <a href="/" class="btn btn-primary">Back to Batch Monitor</a>
+            </div>
+        </LayoutView>
+    </NotFound>
+</Router>

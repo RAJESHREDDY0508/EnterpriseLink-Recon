@@ -1,0 +1,186 @@
+@page "/audit-logs"
+@rendermode InteractiveServer
+@inject IAuditLogService AuditLogSvc
+@implements IAsyncDisposable
+
+<PageTitle>Audit Logs — EnterpriseLink Dashboard</PageTitle>
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <h2 class="mb-0">Audit Logs</h2>
+    <small class="text-muted">
+        Auto-refreshes every 30 s &middot; Last updated: <strong>@_lastRefreshed.ToString("HH:mm:ss")</strong> UTC
+    </small>
+</div>
+
+@* ── Filters ── *@
+<div class="row g-2 mb-3 align-items-end">
+    <div class="col-auto">
+        <label class="form-label small mb-1">Entity Type</label>
+        <input class="form-control form-control-sm" style="width:160px"
+               placeholder="e.g. Transaction"
+               @bind="_entityTypeFilter" @bind:event="oninput"
+               @onchange="OnFilterChanged" />
+    </div>
+    <div class="col-auto">
+        <label class="form-label small mb-1">Action</label>
+        <div class="d-flex gap-1">
+            @foreach (var a in new[] { (string?)null, "Added", "Modified" })
+            {
+                <button class="btn btn-sm @(_actionFilter == a ? "btn-dark" : "btn-outline-secondary")"
+                        @onclick="() => SetActionFilter(a)">
+                    @(a ?? "All")
+                </button>
+            }
+        </div>
+    </div>
+</div>
+
+@if (_logs == null)
+{
+    <div class="text-center py-5">
+        <div class="spinner-border text-dark" role="status">
+            <span class="visually-hidden">Loading…</span>
+        </div>
+    </div>
+}
+else if (_logs.Items.Count == 0)
+{
+    <div class="alert alert-info">No audit log entries found for the selected filters.</div>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table table-hover table-sm align-middle font-monospace">
+            <thead class="table-dark">
+                <tr>
+                    <th>Entity Type</th>
+                    <th>Entity ID</th>
+                    <th>Action</th>
+                    <th>Tenant ID</th>
+                    <th>Occurred At (UTC)</th>
+                    <th>Changes</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var log in _logs.Items)
+                {
+                    <tr>
+                        <td><span class="badge bg-secondary">@log.EntityType</span></td>
+                        <td class="small text-truncate" style="max-width:120px" title="@log.EntityId">
+                            @log.EntityId[..Math.Min(log.EntityId.Length, 16)]
+                        </td>
+                        <td>
+                            <span class="badge @GetActionBadge(log.Action)">@log.Action</span>
+                        </td>
+                        <td class="small text-muted">
+                            @(log.TenantId.HasValue ? log.TenantId.Value.ToString()[..8] + "…" : "—")
+                        </td>
+                        <td class="small text-nowrap">@log.OccurredAt.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                        <td class="small">
+                            @if (log.OldValues != null || log.NewValues != null)
+                            {
+                                <span class="text-muted" title="@log.OldValues → @log.NewValues">
+                                    @(log.OldValues != null ? "before" : "") @(log.NewValues != null ? "after" : "")
+                                </span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <div class="d-flex align-items-center justify-content-between small text-muted">
+        <span>Page @_logs.Page of @_logs.TotalPages &mdash; @_logs.TotalCount total entries</span>
+        <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-secondary" disabled="@(!_logs.HasPreviousPage)"
+                    @onclick="PreviousPage">&#8592; Prev</button>
+            <button class="btn btn-sm btn-outline-secondary" disabled="@(!_logs.HasNextPage)"
+                    @onclick="NextPage">Next &#8594;</button>
+        </div>
+    </div>
+}
+
+@code {
+    private PagedResult<AuditLogDto>? _logs;
+    private string? _entityTypeFilter;
+    private string? _actionFilter;
+    private int _page = 1;
+    private DateTime _lastRefreshed = DateTime.UtcNow;
+    private PeriodicTimer? _timer;
+    private readonly CancellationTokenSource _cts = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataAsync();
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+        _ = RefreshLoopAsync();
+    }
+
+    private async Task RefreshLoopAsync()
+    {
+        try
+        {
+            while (await _timer!.WaitForNextTickAsync(_cts.Token))
+            {
+                await InvokeAsync(async () =>
+                {
+                    await LoadDataAsync();
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private async Task LoadDataAsync()
+    {
+        _logs = await AuditLogSvc.GetAuditLogsAsync(new AuditLogQuery
+        {
+            Page = _page,
+            PageSize = 20,
+            EntityType = string.IsNullOrWhiteSpace(_entityTypeFilter) ? null : _entityTypeFilter.Trim(),
+            Action = _actionFilter,
+        });
+        _lastRefreshed = DateTime.UtcNow;
+    }
+
+    private async Task OnFilterChanged()
+    {
+        _page = 1;
+        await LoadDataAsync();
+    }
+
+    private async Task SetActionFilter(string? action)
+    {
+        _actionFilter = action;
+        _page = 1;
+        await LoadDataAsync();
+    }
+
+    private async Task PreviousPage()
+    {
+        if (_page > 1) { _page--; await LoadDataAsync(); }
+    }
+
+    private async Task NextPage()
+    {
+        _page++;
+        await LoadDataAsync();
+    }
+
+    private static string GetActionBadge(string action) => action switch
+    {
+        "Added"    => "bg-success",
+        "Modified" => "bg-primary",
+        "Deleted"  => "bg-danger",
+        _          => "bg-secondary",
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        await _cts.CancelAsync();
+        _timer?.Dispose();
+        _cts.Dispose();
+    }
+}

@@ -1,0 +1,18 @@
+@inherits LayoutComponentBase
+
+<div class="el-page">
+    <div class="el-sidebar">
+        <NavMenu />
+    </div>
+
+    <main class="el-main">
+        <div class="el-topbar px-4 py-2 d-flex align-items-center justify-content-between">
+            <span class="fw-semibold text-white">EnterpriseLink Recon — Operations Dashboard</span>
+            <span class="text-white-50 small">@DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm") UTC</span>
+        </div>
+
+        <article class="el-content px-4 py-3">
+            @Body
+        </article>
+    </main>
+</div>

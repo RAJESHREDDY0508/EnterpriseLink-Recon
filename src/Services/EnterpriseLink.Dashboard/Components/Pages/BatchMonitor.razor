@@ -1,0 +1,155 @@
+@page "/"
+@rendermode InteractiveServer
+@inject IBatchMonitorService BatchMonitorSvc
+@implements IAsyncDisposable
+
+<PageTitle>Batch Monitor — EnterpriseLink Dashboard</PageTitle>
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <h2 class="mb-0">Batch Monitor</h2>
+    <small class="text-muted">
+        Auto-refreshes every 30 s &middot; Last updated: <strong>@_lastRefreshed.ToString("HH:mm:ss")</strong> UTC
+    </small>
+</div>
+
+@* ── Status filter ── *@
+<div class="mb-3 d-flex gap-2">
+    @foreach (var s in new[] { null, "Processing", "Completed", "Failed" })
+    {
+        <button class="btn btn-sm @(_statusFilter == s ? "btn-primary" : "btn-outline-secondary")"
+                @onclick="() => SetStatusFilter(s)">
+            @(s ?? "All")
+        </button>
+    }
+</div>
+
+@if (_uploads == null)
+{
+    <div class="text-center py-5">
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading…</span>
+        </div>
+    </div>
+}
+else if (_uploads.Items.Count == 0)
+{
+    <div class="alert alert-info">No upload records found for the selected filter.</div>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table table-hover table-sm align-middle">
+            <thead class="table-dark">
+                <tr>
+                    <th>Upload ID</th>
+                    <th>Source System</th>
+                    <th>Status</th>
+                    <th class="text-end">Rows Inserted</th>
+                    <th>Created (UTC)</th>
+                    <th>Updated (UTC)</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var u in _uploads.Items)
+                {
+                    <tr>
+                        <td><code class="small">@u.UploadId.ToString()[..18]&hellip;</code></td>
+                        <td>@u.SourceSystem</td>
+                        <td>
+                            <span class="badge @GetStatusBadge(u.Status)">@u.Status</span>
+                        </td>
+                        <td class="text-end">@u.RowsInserted.ToString("N0")</td>
+                        <td class="small text-nowrap">@u.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                        <td class="small text-nowrap">@u.UpdatedAt.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <div class="d-flex align-items-center justify-content-between small text-muted">
+        <span>Page @_uploads.Page of @_uploads.TotalPages &mdash; @_uploads.TotalCount total records</span>
+        <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-secondary" disabled="@(!_uploads.HasPreviousPage)"
+                    @onclick="PreviousPage">&#8592; Prev</button>
+            <button class="btn btn-sm btn-outline-secondary" disabled="@(!_uploads.HasNextPage)"
+                    @onclick="NextPage">Next &#8594;</button>
+        </div>
+    </div>
+}
+
+@code {
+    private PagedResult<ProcessedUploadSummaryDto>? _uploads;
+    private string? _statusFilter;
+    private int _page = 1;
+    private DateTime _lastRefreshed = DateTime.UtcNow;
+    private PeriodicTimer? _timer;
+    private readonly CancellationTokenSource _cts = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataAsync();
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+        _ = RefreshLoopAsync();
+    }
+
+    private async Task RefreshLoopAsync()
+    {
+        try
+        {
+            while (await _timer!.WaitForNextTickAsync(_cts.Token))
+            {
+                await InvokeAsync(async () =>
+                {
+                    await LoadDataAsync();
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private async Task LoadDataAsync()
+    {
+        _uploads = await BatchMonitorSvc.GetUploadsAsync(new BatchMonitorQuery
+        {
+            Page = _page,
+            PageSize = 20,
+            Status = _statusFilter,
+        });
+        _lastRefreshed = DateTime.UtcNow;
+    }
+
+    private async Task SetStatusFilter(string? status)
+    {
+        _statusFilter = status;
+        _page = 1;
+        await LoadDataAsync();
+    }
+
+    private async Task PreviousPage()
+    {
+        if (_page > 1) { _page--; await LoadDataAsync(); }
+    }
+
+    private async Task NextPage()
+    {
+        _page++;
+        await LoadDataAsync();
+    }
+
+    private static string GetStatusBadge(string status) => status switch
+    {
+        "Completed"  => "bg-success",
+        "Processing" => "bg-primary",
+        "Failed"     => "bg-danger",
+        _            => "bg-secondary",
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        await _cts.CancelAsync();
+        _timer?.Dispose();
+        _cts.Dispose();
+    }
+}

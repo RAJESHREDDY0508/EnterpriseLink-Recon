@@ -1,0 +1,133 @@
+/* ── EnterpriseLink Dashboard — Global Styles ───────────────────────────── */
+
+:root {
+    --el-sidebar-width: 220px;
+    --el-sidebar-bg: #1a1d21;
+    --el-topbar-bg: #212529;
+    --el-topbar-height: 48px;
+    --el-accent: #0d6efd;
+}
+
+/* ── Page layout ─────────────────────────────────────────────────────────── */
+
+.el-page {
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+}
+
+.el-sidebar {
+    width: var(--el-sidebar-width);
+    min-width: var(--el-sidebar-width);
+    background: var(--el-sidebar-bg);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+}
+
+.el-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.el-topbar {
+    background: var(--el-topbar-bg);
+    height: var(--el-topbar-height);
+    flex-shrink: 0;
+    color: #fff;
+}
+
+.el-content {
+    flex: 1;
+    overflow-y: auto;
+    background: #f8f9fa;
+}
+
+/* ── Sidebar navigation ──────────────────────────────────────────────────── */
+
+.el-nav-header {
+    background: var(--el-sidebar-bg);
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+.el-brand {
+    color: #fff;
+    font-weight: 700;
+    font-size: 1rem;
+    text-decoration: none;
+    letter-spacing: 0.02em;
+}
+
+.el-brand:hover {
+    color: #adb5bd;
+}
+
+.el-brand-icon {
+    color: var(--el-accent);
+    margin-right: 6px;
+}
+
+.el-nav {
+    flex: 1;
+}
+
+.el-nav-link {
+    color: #adb5bd !important;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 0.875rem;
+    transition: background 0.15s, color 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.el-nav-link:hover {
+    background: rgba(255,255,255,0.07);
+    color: #fff !important;
+}
+
+.el-nav-link.active {
+    background: var(--el-accent);
+    color: #fff !important;
+}
+
+.el-nav-icon {
+    font-size: 1rem;
+    width: 20px;
+    text-align: center;
+}
+
+.el-nav-footer {
+    border-top: 1px solid rgba(255,255,255,0.08);
+}
+
+/* ── Tables ──────────────────────────────────────────────────────────────── */
+
+.table th {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.table code {
+    font-size: 0.75rem;
+}
+
+/* ── Badges ──────────────────────────────────────────────────────────────── */
+
+.badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+}
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+    .el-sidebar {
+        display: none;
+    }
+}

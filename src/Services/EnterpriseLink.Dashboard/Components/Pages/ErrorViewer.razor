@@ -1,0 +1,169 @@
+@page "/errors"
+@rendermode InteractiveServer
+@inject IErrorViewerService ErrorViewerSvc
+@implements IAsyncDisposable
+
+<PageTitle>Error Viewer — EnterpriseLink Dashboard</PageTitle>
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <h2 class="mb-0">Error Viewer</h2>
+    <small class="text-muted">
+        Auto-refreshes every 30 s &middot; Last updated: <strong>@_lastRefreshed.ToString("HH:mm:ss")</strong> UTC
+    </small>
+</div>
+
+@* ── Filters ── *@
+<div class="row g-2 mb-3">
+    <div class="col-auto">
+        <label class="form-label small mb-0">Failure Reason</label>
+        <div class="d-flex gap-1 mt-1">
+            @foreach (var r in new[] { (string?)null, "Schema", "BusinessRule", "Duplicate" })
+            {
+                <button class="btn btn-sm @(_reasonFilter == r ? "btn-warning" : "btn-outline-secondary")"
+                        @onclick="() => SetReasonFilter(r)">
+                    @(r ?? "All")
+                </button>
+            }
+        </div>
+    </div>
+</div>
+
+@if (_errors == null)
+{
+    <div class="text-center py-5">
+        <div class="spinner-border text-warning" role="status">
+            <span class="visually-hidden">Loading…</span>
+        </div>
+    </div>
+}
+else if (_errors.Items.Count == 0)
+{
+    <div class="alert alert-success">
+        &#10003; No validation errors found for the selected filter.
+    </div>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table table-hover table-sm align-middle">
+            <thead class="table-dark">
+                <tr>
+                    <th>Upload ID</th>
+                    <th class="text-end">Row #</th>
+                    <th>Failure Reason</th>
+                    <th>Validation Errors</th>
+                    <th>Created (UTC)</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var e in _errors.Items)
+                {
+                    <tr>
+                        <td><code class="small">@e.UploadId.ToString()[..18]&hellip;</code></td>
+                        <td class="text-end">@e.RowNumber</td>
+                        <td>
+                            <span class="badge @GetReasonBadge(e.FailureReason)">@e.FailureReason</span>
+                        </td>
+                        <td class="small text-truncate" style="max-width:350px"
+                            title="@e.ValidationErrors">
+                            @TruncateErrors(e.ValidationErrors)
+                        </td>
+                        <td class="small text-nowrap">@e.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <div class="d-flex align-items-center justify-content-between small text-muted">
+        <span>Page @_errors.Page of @_errors.TotalPages &mdash; @_errors.TotalCount total errors</span>
+        <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-secondary" disabled="@(!_errors.HasPreviousPage)"
+                    @onclick="PreviousPage">&#8592; Prev</button>
+            <button class="btn btn-sm btn-outline-secondary" disabled="@(!_errors.HasNextPage)"
+                    @onclick="NextPage">Next &#8594;</button>
+        </div>
+    </div>
+}
+
+@code {
+    private PagedResult<InvalidTransactionDto>? _errors;
+    private string? _reasonFilter;
+    private int _page = 1;
+    private DateTime _lastRefreshed = DateTime.UtcNow;
+    private PeriodicTimer? _timer;
+    private readonly CancellationTokenSource _cts = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataAsync();
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+        _ = RefreshLoopAsync();
+    }
+
+    private async Task RefreshLoopAsync()
+    {
+        try
+        {
+            while (await _timer!.WaitForNextTickAsync(_cts.Token))
+            {
+                await InvokeAsync(async () =>
+                {
+                    await LoadDataAsync();
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private async Task LoadDataAsync()
+    {
+        _errors = await ErrorViewerSvc.GetErrorsAsync(new ErrorViewerQuery
+        {
+            Page = _page,
+            PageSize = 20,
+            FailureReason = _reasonFilter,
+        });
+        _lastRefreshed = DateTime.UtcNow;
+    }
+
+    private async Task SetReasonFilter(string? reason)
+    {
+        _reasonFilter = reason;
+        _page = 1;
+        await LoadDataAsync();
+    }
+
+    private async Task PreviousPage()
+    {
+        if (_page > 1) { _page--; await LoadDataAsync(); }
+    }
+
+    private async Task NextPage()
+    {
+        _page++;
+        await LoadDataAsync();
+    }
+
+    private static string GetReasonBadge(string reason) => reason switch
+    {
+        "Schema"       => "bg-danger",
+        "BusinessRule" => "bg-warning text-dark",
+        "Duplicate"    => "bg-info text-dark",
+        _              => "bg-secondary",
+    };
+
+    private static string TruncateErrors(string json)
+    {
+        if (json.Length <= 80) return json;
+        return json[..77] + "…";
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _cts.CancelAsync();
+        _timer?.Dispose();
+        _cts.Dispose();
+    }
+}
