@@ -233,8 +233,14 @@ public sealed class FileUploadedEventConsumer : IConsumer<FileUploadedEvent>
             // ── Step 9: Mark complete ──────────────────────────────────────────
             await _idempotencyGuard.CompleteAsync(message.UploadId, rowsInserted, cancellationToken);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            _logger.LogError(
+                ex,
+                "FileUploadedEvent processing failed — marking upload as failed. " +
+                "UploadId={UploadId} TenantId={TenantId}",
+                message.UploadId, message.TenantId);
+
             await _idempotencyGuard.FailAsync(message.UploadId, CancellationToken.None);
             throw;
         }

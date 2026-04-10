@@ -142,7 +142,9 @@ public sealed class EfUploadIdempotencyGuard : IUploadIdempotencyGuard
                 "Cannot mark upload as complete — ProcessedUpload record not found. " +
                 "UploadId={UploadId}",
                 uploadId);
-            return;
+            throw new InvalidOperationException(
+                $"ProcessedUpload {uploadId} not found — cannot mark as Completed. " +
+                "The record may have been deleted concurrently.");
         }
 
         record.Status = UploadProcessingStatus.Completed;

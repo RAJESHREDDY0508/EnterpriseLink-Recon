@@ -186,10 +186,17 @@ public class AppDbContext : DbContext
         if (!_tenantContext.HasTenant)
             return;
 
+        var tenantId = _tenantContext.TenantId;
+
+        if (tenantId == Guid.Empty)
+            throw new InvalidOperationException(
+                "A tenant-scoped save was attempted but TenantId is Guid.Empty. " +
+                "Ensure the tenant context is initialised before any write operation.");
+
         foreach (var entry in ChangeTracker.Entries<ITenantScoped>()
                      .Where(e => e.State == EntityState.Added))
         {
-            entry.Entity.TenantId = _tenantContext.TenantId;
+            entry.Entity.TenantId = tenantId;
         }
     }
 
