@@ -45,6 +45,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EnterpriseLink.Worker.Bench
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EnterpriseLink.Dashboard.Tests", "tests\EnterpriseLink.Dashboard.Tests\EnterpriseLink.Dashboard.Tests.csproj", "{1171BC6E-0880-46FA-8669-A5AFA651ACD8}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EnterpriseLink.Integration", "src\Services\EnterpriseLink.Integration\EnterpriseLink.Integration.csproj", "{A7B3C2D1-1234-4E56-89AB-CDEF01234567}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EnterpriseLink.Integration.Tests", "tests\EnterpriseLink.Integration.Tests\EnterpriseLink.Integration.Tests.csproj", "{B8C4D3E2-2345-5F67-9ABC-DEF012345678}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -118,6 +122,14 @@ Global
 		{1171BC6E-0880-46FA-8669-A5AFA651ACD8}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{1171BC6E-0880-46FA-8669-A5AFA651ACD8}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{1171BC6E-0880-46FA-8669-A5AFA651ACD8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A7B3C2D1-1234-4E56-89AB-CDEF01234567}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A7B3C2D1-1234-4E56-89AB-CDEF01234567}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A7B3C2D1-1234-4E56-89AB-CDEF01234567}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A7B3C2D1-1234-4E56-89AB-CDEF01234567}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B8C4D3E2-2345-5F67-9ABC-DEF012345678}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B8C4D3E2-2345-5F67-9ABC-DEF012345678}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B8C4D3E2-2345-5F67-9ABC-DEF012345678}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B8C4D3E2-2345-5F67-9ABC-DEF012345678}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{052197DC-B35F-4386-B30A-BB6087769E40} = {2B1E7B90-E48B-4BB1-8EE8-F0C20A413A4C}
@@ -139,5 +151,7 @@ Global
 		{AB9C493C-5560-4805-95A5-0744F3F5D91A} = {99903446-8460-4897-B40B-3A80BC05CAB1}
 		{2E91E9CA-DCB5-4D5E-8015-EB12D8CE30CB} = {99903446-8460-4897-B40B-3A80BC05CAB1}
 		{1171BC6E-0880-46FA-8669-A5AFA651ACD8} = {99903446-8460-4897-B40B-3A80BC05CAB1}
+		{A7B3C2D1-1234-4E56-89AB-CDEF01234567} = {6652B7D9-02AF-4EC5-996C-297CD9FF74C1}
+		{B8C4D3E2-2345-5F67-9ABC-DEF012345678} = {99903446-8460-4897-B40B-3A80BC05CAB1}
 	EndGlobalSection
 EndGlobal

@@ -3,7 +3,8 @@
     "allow": [
       "Bash(dotnet test:*)",
       "Bash(dotnet format:*)",
-      "Bash(dotnet build:*)"
+      "Bash(dotnet build:*)",
+      "mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_screenshot"
     ]
   }
 }

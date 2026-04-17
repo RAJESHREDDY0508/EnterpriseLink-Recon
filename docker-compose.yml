@@ -92,6 +92,8 @@ services:
         condition: service_healthy
       dashboard-service:
         condition: service_healthy
+      integration-service:
+        condition: service_healthy
     networks:
       - el-network
     restart: unless-stopped
@@ -204,6 +206,36 @@ services:
       - el-network
     restart: unless-stopped
 
+  integration-service:
+    build:
+      context: .
+      dockerfile: src/Services/EnterpriseLink.Integration/Dockerfile
+    container_name: el-integration
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      Integration__StorageRoot: /app/integration-files
+      RabbitMQ__Host: "rabbitmq"
+      RabbitMQ__VirtualHost: "enterpriselink"
+      RabbitMQ__Username: "${RABBITMQ_USER:-eluser}"
+      RabbitMQ__Password: "${RABBITMQ_PASS:-elpassword}"
+    ports:
+      - "5006:8080"
+    volumes:
+      - integration-files:/app/integration-files
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - el-network
+    restart: unless-stopped
+
   dashboard-service:
     build:
       context: .
@@ -235,6 +267,8 @@ volumes:
     name: el-sqlserver-data
   rabbitmq-data:
     name: el-rabbitmq-data
+  integration-files:
+    name: el-integration-files
 
 networks:
   el-network:
